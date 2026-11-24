@@ -1,7 +1,7 @@
 /**
- * No Dutch Please - Content Script
+ * BE Locale Switcher - Content Script
  * Runs at document_idle on Belgian (.be) websites.
- * Detects 404 Not Found pages to allow immediate rollback to Dutch and loop prevention.
+ * Detects 404 Not Found pages to allow immediate rollback and loop prevention.
  */
 
 (() => {

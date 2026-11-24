@@ -1,5 +1,5 @@
 /**
- * No Dutch Please - Popup Controller
+ * BE Locale Switcher - Popup Controller
  * Lightweight, privacy-friendly Manifest V3 popup script.
  * Supports bi-directional locale switching (French first vs Dutch first).
  */

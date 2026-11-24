@@ -1,4 +1,4 @@
-# No Dutch Please 🇧🇪 🇫🇷 🇳🇱
+# BE Locale Switcher 🇧🇪 🇫🇷 🇳🇱
 
 > **Zero-bloat, privacy-friendly Manifest V3 cross-browser extension for Chromium (Chrome, Brave, Edge) and Firefox that automatically defaults Belgian websites to your preferred national language (French or Dutch) while keeping the rest of the web in your preferred browser language (e.g. English).**
 
@@ -10,7 +10,7 @@ When your browser language is set to English, visiting Belgian (`.be`) and comme
 - **For Francophones / Walloons:** English browsers constantly default to Dutch (`nl`).
 - **For Flemings:** English browsers or certain services default to French (`fr`).
 
-**No Dutch Please** solves this seamlessly in both directions:
+**BE Locale Switcher** solves this seamlessly in both directions:
 1. **Dynamic Locale Forcing:** Sets the `Accept-Language` HTTP header on `.be` requests to your preferred language (French or Dutch) using native, zero-CPU `declarativeNetRequest`.
 2. **Smart URL Rewriting:** Bi-directionally rewrites language patterns (`nl` ⟷ `fr`) across subdomains, path segments, and query parameters.
 3. **Infinite Redirect Loop & 404 Guard:** Automatically detects single-language sites (e.g., Dutch-only or French-only regional portals) and temporarily bypasses them if a rewrite fails.
@@ -58,7 +58,7 @@ When your browser language is set to English, visiting Belgian (`.be`) and comme
 ## Project Structure
 
 ```text
-no-dutch-please/
+be-locale-switcher/
 ├── manifest.chrome.json      # Manifest V3 for Chromium (service_worker)
 ├── manifest.firefox.json     # Manifest V3 for Firefox (background.scripts & Gecko settings)
 ├── manifest.json             # Active manifest (swappable via scripts/build.js)
@@ -100,7 +100,7 @@ no-dutch-please/
    *(For Brave: `brave://extensions` | For Edge: `edge://extensions`)*
 3. Enable **Developer mode** (toggle switch in the top-right corner).
 4. Click **Load unpacked** in the top-left corner.
-5. Select the `no-dutch-please` project folder.
+5. Select the `be-locale-switcher` project folder.
 6. The extension is now active! Pin it to your toolbar to view status and controls.
 
 ---
@@ -117,7 +117,7 @@ no-dutch-please/
    about:debugging#/runtime/this-firefox
    ```
 3. Click **Load Temporary Add-on...**
-4. Browse to the `no-dutch-please` folder and select `manifest.json`.
+4. Browse to the `be-locale-switcher` folder and select `manifest.json`.
 5. *(Optional/Recommended)* When opening the popup on a `.be` site for the first time, click **Grant** if Firefox displays the host permission prompt to allow `declarativeNetRequest` header modifications.
 
 ---

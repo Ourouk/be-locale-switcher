@@ -1,5 +1,5 @@
 /**
- * No Dutch Please - Comprehensive Test Suite
+ * BE Locale Switcher - Comprehensive Test Suite
  * Tests URL rewriting, domain extraction, exclusion rules, loop guard logic, bi-directional mode, and manifest structures.
  */
 
@@ -38,7 +38,7 @@ function it(desc, fn) {
   }
 }
 
-console.log("\n🧪 Running No Dutch Please Test Suite\n");
+console.log("\n🧪 Running BE Locale Switcher Test Suite\n");
 
 // 1. Subdomain Rewriting
 console.log("▶ 1. Subdomain Rewriting (.be and commercial .com sites)");
@@ -351,7 +351,7 @@ it("validates manifest.firefox.json syntax, Gecko settings, and strict_min_versi
   const content = JSON.parse(fs.readFileSync(path.join(__dirname, "../manifest.firefox.json"), "utf8"));
   assert.strictEqual(content.manifest_version, 3);
   assert.deepStrictEqual(content.background.scripts, ["background.js"]);
-  assert.strictEqual(content.browser_specific_settings.gecko.id, "no-dutch-please@extension");
+  assert.strictEqual(content.browser_specific_settings.gecko.id, "be-locale-switcher@extension");
   assert.strictEqual(content.browser_specific_settings.gecko.strict_min_version, "115.0");
   assert.strictEqual(content.permissions.includes("declarativeNetRequest"), true);
   assert.strictEqual(content.host_permissions.includes("*://*.be/*"), true);

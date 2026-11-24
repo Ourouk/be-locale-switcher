@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * No Dutch Please - Build & Manifest Switcher Script
+ * BE Locale Switcher - Build & Manifest Switcher Script
  * Zero-dependency helper to swap manifests between Chromium and Firefox,
  * and optionally build release distribution archives.
  */
@@ -91,14 +91,14 @@ function packageExtensions() {
 
   // 1. Package Chrome
   activate('chrome');
-  const chromeZip = path.join(DIST_DIR, `no-dutch-please-v${version}-chrome.zip`);
+  const chromeZip = path.join(DIST_DIR, `be-locale-switcher-v${version}-chrome.zip`);
   if (fs.existsSync(chromeZip)) fs.unlinkSync(chromeZip);
   createZipArchive(chromeZip, filesToInclude);
   console.log(`✓ Packaged Chrome extension: dist/${path.basename(chromeZip)}`);
 
   // 2. Package Firefox
   activate('firefox');
-  const firefoxZip = path.join(DIST_DIR, `no-dutch-please-v${version}-firefox.zip`);
+  const firefoxZip = path.join(DIST_DIR, `be-locale-switcher-v${version}-firefox.zip`);
   if (fs.existsSync(firefoxZip)) fs.unlinkSync(firefoxZip);
   createZipArchive(firefoxZip, filesToInclude);
   console.log(`✓ Packaged Firefox extension: dist/${path.basename(firefoxZip)}`);

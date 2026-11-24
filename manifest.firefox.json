@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "No Dutch Please",
+  "name": "BE Locale Switcher",
   "version": "1.0.0",
-  "description": "Automatically defaults Belgian websites to French while keeping the rest of the web in English.",
+  "description": "Automatically defaults Belgian (.be) and commercial websites to your preferred national language (French or Dutch).",
   "permissions": [
     "declarativeNetRequest",
     "declarativeNetRequestWithHostAccess",
@@ -17,13 +17,13 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "no-dutch-please@extension",
+      "id": "be-locale-switcher@extension",
       "strict_min_version": "115.0"
     }
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "No Dutch Please",
+    "default_title": "BE Locale Switcher",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",

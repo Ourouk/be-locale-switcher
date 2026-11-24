@@ -1,5 +1,5 @@
 /**
- * No Dutch Please - Background Script
+ * BE Locale Switcher - Background Script
  * Lightweight, privacy-friendly Manifest V3 extension for Chromium and Firefox.
  * Bi-directional locale enforcement for Belgian (.be) websites and commercial (.com) sites.
  * Defaults sites to French (NL -> FR) or Dutch (FR -> NL) based on user preference,
@@ -310,7 +310,7 @@ async function getSyncData() {
       whitelist: Array.isArray(data.whitelist) ? data.whitelist : []
     };
   } catch (err) {
-    console.error("[No Dutch Please] storage.sync.get error:", err);
+    console.error("[BE Locale Switcher] storage.sync.get error:", err);
     return { enabled: true, targetLanguage: "fr", whitelist: [] };
   }
 }
@@ -324,7 +324,7 @@ async function getSessionData() {
         pendingRedirects: data.pendingRedirects && typeof data.pendingRedirects === "object" ? data.pendingRedirects : {}
       };
     } catch (err) {
-      console.warn("[No Dutch Please] storage.session.get error:", err);
+      console.warn("[BE Locale Switcher] storage.session.get error:", err);
     }
   }
   return {
@@ -345,7 +345,7 @@ async function setSessionData(data) {
       await api.storage.session.set(rest);
       return;
     } catch (err) {
-      console.warn("[No Dutch Please] storage.session.set error:", err);
+      console.warn("[BE Locale Switcher] storage.session.set error:", err);
     }
   }
 }
@@ -444,7 +444,7 @@ async function syncDnrRules() {
         addRules: []
       });
     } catch (err) {
-      console.error("[No Dutch Please] Failed to disable DNR rules:", err);
+      console.error("[BE Locale Switcher] Failed to disable DNR rules:", err);
     }
     return;
   }
@@ -458,7 +458,7 @@ async function syncDnrRules() {
     .slice(0, 100);
   const totalExcluded = new Set([...whitelist, ...sessionBypassed].map((d) => (d || "").trim().toLowerCase())).size;
   if (totalExcluded > excludedDomains.length) {
-    console.warn(`[No Dutch Please] ${totalExcluded - excludedDomains.length} excluded domains dropped (100-domain rule limit).`);
+    console.warn(`[BE Locale Switcher] ${totalExcluded - excludedDomains.length} excluded domains dropped (100-domain rule limit).`);
   }
 
   const condition = {
@@ -494,7 +494,7 @@ async function syncDnrRules() {
       addRules: [rule]
     });
   } catch (err) {
-    console.error("[No Dutch Please] Failed to update DNR rules:", err);
+    console.error("[BE Locale Switcher] Failed to update DNR rules:", err);
   }
 }
 
@@ -625,7 +625,7 @@ async function handleUrlNavigation(tabId, url) {
     if (isSameDomain) {
       // If server bounced back to source language or the original URL:
       if (isSourceLangUrl(url, targetLanguage) || url === pending.fromUrl) {
-        console.warn(`[No Dutch Please] Redirect loop detected for ${hostname}! Bypassing for this session.`);
+        console.warn(`[BE Locale Switcher] Redirect loop detected for ${hostname}! Bypassing for this session.`);
         await clearPendingRedirect(tabId);
         await markDomainSessionBypassed(pending.domain);
         await updateBadge(tabId, "bypassed", targetLanguage);
@@ -649,7 +649,7 @@ async function handleUrlNavigation(tabId, url) {
       await api.tabs.update(tabId, { url: rewrittenUrl });
       await updateBadge(tabId, "active", targetLanguage);
     } catch (err) {
-      console.error("[No Dutch Please] tabs.update error:", err);
+      console.error("[BE Locale Switcher] tabs.update error:", err);
     }
   } else {
     // URL does not need rewrite
@@ -676,7 +676,7 @@ async function handle404Report(tabId, reportedUrl) {
   const { targetLanguage } = await getSyncData();
   const now = Date.now();
   if (now - pending.timestamp < REDIRECT_LOOP_WINDOW_MS) {
-    console.warn(`[No Dutch Please] 404 detected after redirecting to ${reportedUrl}. Reverting to fallback version and bypassing.`);
+    console.warn(`[BE Locale Switcher] 404 detected after redirecting to ${reportedUrl}. Reverting to fallback version and bypassing.`);
     const domain = pending.domain;
     const fallbackUrl = pending.fromUrl;
 
@@ -687,7 +687,7 @@ async function handle404Report(tabId, reportedUrl) {
       await api.tabs.update(tabId, { url: fallbackUrl });
       await updateBadge(tabId, "bypassed", targetLanguage);
     } catch (err) {
-      console.error("[No Dutch Please] 404 fallback tabs.update error:", err);
+      console.error("[BE Locale Switcher] 404 fallback tabs.update error:", err);
     }
   }
 }

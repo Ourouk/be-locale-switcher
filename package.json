@@ -1,7 +1,7 @@
 {
-  "name": "no-dutch-please",
+  "name": "be-locale-switcher",
   "version": "1.0.0",
-  "description": "Lightweight, privacy-friendly Manifest V3 browser extension defaulting Belgian websites to French while keeping the rest of the web in English.",
+  "description": "Lightweight, privacy-friendly Manifest V3 browser extension defaulting Belgian websites to your preferred national language (French or Dutch) while keeping the rest of the web in your preferred browser language.",
   "scripts": {
     "build:chrome": "node scripts/build.js chrome",
     "build:firefox": "node scripts/build.js firefox",
