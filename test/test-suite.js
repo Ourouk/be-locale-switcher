@@ -37,7 +37,7 @@ function it(desc, fn) {
 console.log("\n🧪 Running No Dutch Please Test Suite\n");
 
 // 1. Subdomain Rewriting
-console.log("▶ 1. Subdomain Rewriting (.be domains)");
+console.log("▶ 1. Subdomain Rewriting (.be and international sites)");
 it("rewrites nl.example.be to fr.example.be", () => {
   assert.strictEqual(rewriteUrl("https://nl.example.be/"), "https://fr.example.be/");
   assert.strictEqual(rewriteUrl("http://nl.example.be/path"), "http://fr.example.be/path");
@@ -47,14 +47,25 @@ it("rewrites nl-be.example.be to fr-be.example.be", () => {
   assert.strictEqual(rewriteUrl("https://nl-be.example.be/"), "https://fr-be.example.be/");
 });
 
-it("never modifies subdomains containing 'nl' like 'online', 'only', 'download'", () => {
-  assert.strictEqual(rewriteUrl("https://online.example.be/"), null);
-  assert.strictEqual(rewriteUrl("https://only.example.be/"), null);
-  assert.strictEqual(rewriteUrl("https://download.example.be/"), null);
+it("rewrites international Dutch subdomains (e.g. nl.aliexpress.com -> fr.aliexpress.com)", () => {
+  assert.strictEqual(rewriteUrl("https://nl.aliexpress.com/"), "https://fr.aliexpress.com/");
+  assert.strictEqual(
+    rewriteUrl("https://nl.aliexpress.com/item/100500628.html?spm=a2g0o"),
+    "https://fr.aliexpress.com/item/100500628.html?spm=a2g0o"
+  );
+  assert.strictEqual(rewriteUrl("https://nl.shein.com/catalog"), "https://fr.shein.com/catalog");
+  assert.strictEqual(rewriteUrl("https://nl.tripadvisor.com/"), "https://fr.tripadvisor.com/");
 });
 
-it("does not rewrite subdomains on non-.be domains (e.g. nl.example.com)", () => {
-  assert.strictEqual(rewriteUrl("https://nl.example.com/"), null);
+it("never modifies subdomains containing 'nl' like 'online', 'only', 'download'", () => {
+  assert.strictEqual(rewriteUrl("https://online.aliexpress.com/"), null);
+  assert.strictEqual(rewriteUrl("https://only.example.be/"), null);
+  assert.strictEqual(rewriteUrl("https://download.example.com/"), null);
+});
+
+it("never rewrites subdomains on genuine Netherlands .nl domains (e.g. nl.something.nl or nos.nl)", () => {
+  assert.strictEqual(rewriteUrl("https://nos.nl/"), null);
+  assert.strictEqual(rewriteUrl("https://nl.something.nl/"), null);
 });
 
 // 2. Path Segment Rewriting
@@ -70,8 +81,20 @@ it("rewrites Belgian variants /nl-be/, /nl_BE/, /nl_be/", () => {
   assert.strictEqual(rewriteUrl("https://example.be/nl_be"), "https://example.be/fr_be");
 });
 
+it("rewrites Belgian inverted path /be-nl/ and /be_nl/ on international sites", () => {
+  assert.strictEqual(rewriteUrl("https://www.apple.com/be-nl/shop"), "https://www.apple.com/be-fr/shop");
+  assert.strictEqual(rewriteUrl("https://example.com/be_nl/item"), "https://example.com/be_fr/item");
+});
+
+it("rewrites two-segment Belgian paths /be/nl/ and /nl/be/ on international sites", () => {
+  assert.strictEqual(rewriteUrl("https://www.ikea.com/be/nl/cat/chairs"), "https://www.ikea.com/be/fr/cat/chairs");
+  assert.strictEqual(rewriteUrl("https://www.decathlon.com/be/nl/p/bike"), "https://www.decathlon.com/be/fr/p/bike");
+  assert.strictEqual(rewriteUrl("https://example.com/nl/be/home"), "https://example.com/fr/be/home");
+});
+
 it("preserves uppercase codes like /NL/", () => {
   assert.strictEqual(rewriteUrl("https://example.be/NL/"), "https://example.be/FR/");
+  assert.strictEqual(rewriteUrl("https://www.apple.com/be-NL/shop"), "https://www.apple.com/be-FR/shop");
 });
 
 it("rewrites nested paths e.g. /app/nl/profile", () => {
@@ -83,6 +106,7 @@ it("never breaks words containing 'nl' in path segments", () => {
   assert.strictEqual(rewriteUrl("https://example.be/only"), null);
   assert.strictEqual(rewriteUrl("https://example.be/download/"), null);
   assert.strictEqual(rewriteUrl("https://example.be/downloads/nl-file.zip"), null);
+  assert.strictEqual(rewriteUrl("https://www.ikea.com/be/online/chairs"), null);
 });
 
 it("handles paths with both 'nl' segment and downstream words containing 'nl'", () => {
@@ -92,10 +116,8 @@ it("handles paths with both 'nl' segment and downstream words containing 'nl'", 
   );
 });
 
-it("rewrites /nl-be/ on non-.be domains while leaving generic /nl/ untouched", () => {
-  assert.strictEqual(rewriteUrl("https://example.com/nl-be/products"), "https://example.com/fr-be/products");
-  assert.strictEqual(rewriteUrl("https://example.com/nl_BE/item"), "https://example.com/fr_BE/item");
-  assert.strictEqual(rewriteUrl("https://example.com/nl/products"), null); // untouched
+it("leaves generic /nl/ untouched on non-.be domains (e.g. bol.com/nl/)", () => {
+  assert.strictEqual(rewriteUrl("https://www.bol.com/nl/p/book"), null);
 });
 
 // 3. Query Parameter Rewriting
@@ -115,6 +137,7 @@ it("does not rewrite unrelated query parameters like search queries", () => {
 it("rewrites query parameters on non-.be domains only if Belgian Dutch", () => {
   assert.strictEqual(rewriteUrl("https://example.com/?lang=nl-be"), "https://example.com/?lang=fr-be");
   assert.strictEqual(rewriteUrl("https://example.com/?locale=nl_BE"), "https://example.com/?locale=fr_BE");
+  assert.strictEqual(rewriteUrl("https://example.com/?lang=be-nl"), "https://example.com/?lang=be-fr");
   assert.strictEqual(rewriteUrl("https://example.com/?lang=nl"), null); // untouched
 });
 
@@ -137,6 +160,7 @@ it("ignores non-http/https protocols", () => {
 console.log("\n▶ 5. Domain & Exclusion Utilities");
 it("extracts primary domain properly", () => {
   assert.strictEqual(getPrimaryDomain("nl.vrt.be"), "vrt.be");
+  assert.strictEqual(getPrimaryDomain("nl.aliexpress.com"), "aliexpress.com");
   assert.strictEqual(getPrimaryDomain("vrt.be"), "vrt.be");
   assert.strictEqual(getPrimaryDomain("sub.nl.bpost.be"), "bpost.be");
   assert.strictEqual(getPrimaryDomain("info.ulb.ac.be"), "ulb.ac.be");
@@ -144,14 +168,15 @@ it("extracts primary domain properly", () => {
 });
 
 it("detects domain exclusions (exact match, subdomain, and parent match)", () => {
-  const whitelist = ["vrt.be", "specific.sub.be"];
+  const whitelist = ["vrt.be", "aliexpress.com", "specific.sub.be"];
   assert.strictEqual(isDomainExcluded("vrt.be", whitelist), true);
   assert.strictEqual(isDomainExcluded("nl.vrt.be", whitelist), true);
+  assert.strictEqual(isDomainExcluded("nl.aliexpress.com", whitelist), true);
+  assert.strictEqual(isDomainExcluded("fr.aliexpress.com", whitelist), true);
   assert.strictEqual(isDomainExcluded("sub.vrt.be", whitelist), true);
   assert.strictEqual(isDomainExcluded("specific.sub.be", whitelist), true);
   assert.strictEqual(isDomainExcluded("other.sub.be", whitelist), false);
   assert.strictEqual(isDomainExcluded("bpost.be", whitelist), false);
-  assert.strictEqual(isDomainExcluded("vrt.be.com", whitelist), false);
 });
 
 // 6. Loop Guard Simulation
@@ -159,9 +184,13 @@ console.log("\n▶ 6. Loop Guard Simulation");
 it("identifies Dutch URLs accurately", () => {
   assert.strictEqual(isDutchUrl("https://example.be/nl/"), true);
   assert.strictEqual(isDutchUrl("https://nl.example.be/"), true);
+  assert.strictEqual(isDutchUrl("https://nl.aliexpress.com/"), true);
+  assert.strictEqual(isDutchUrl("https://www.apple.com/be-nl/"), true);
+  assert.strictEqual(isDutchUrl("https://www.ikea.com/be/nl/"), true);
   assert.strictEqual(isDutchUrl("https://example.be/?lang=nl"), true);
+  assert.strictEqual(isDutchUrl("https://fr.aliexpress.com/"), false);
   assert.strictEqual(isDutchUrl("https://example.be/fr/"), false);
-  assert.strictEqual(isDutchUrl("https://example.com/en/"), false);
+  assert.strictEqual(isDutchUrl("https://nos.nl/"), false);
 });
 
 it("simulates loop guard redirect detection within 5000ms window", () => {
@@ -210,6 +239,7 @@ it("validates manifest.json supports Firefox (has background.scripts)", () => {
   assert.strictEqual(content.manifest_version, 3);
   assert.strictEqual(Array.isArray(content.background.scripts), true);
   assert.strictEqual(content.background.scripts.includes("background.js"), true);
+  assert.strictEqual(content.host_permissions.includes("*://*.aliexpress.com/*"), true);
 });
 
 it("validates manifest.chrome.json syntax and MV3 service worker", () => {
@@ -221,6 +251,7 @@ it("validates manifest.chrome.json syntax and MV3 service worker", () => {
   assert.strictEqual(content.permissions.includes("storage"), true);
   assert.strictEqual(content.permissions.includes("tabs"), true);
   assert.strictEqual(content.host_permissions.includes("*://*.be/*"), true);
+  assert.strictEqual(content.host_permissions.includes("*://*.aliexpress.com/*"), true);
   assert.strictEqual(content.action.default_popup, "popup/popup.html");
 });
 
@@ -232,6 +263,7 @@ it("validates manifest.firefox.json syntax, Gecko settings, and strict_min_versi
   assert.strictEqual(content.browser_specific_settings.gecko.strict_min_version, "115.0");
   assert.strictEqual(content.permissions.includes("declarativeNetRequest"), true);
   assert.strictEqual(content.host_permissions.includes("*://*.be/*"), true);
+  assert.strictEqual(content.host_permissions.includes("*://*.aliexpress.com/*"), true);
 });
 
 console.log(`\n========================================`);

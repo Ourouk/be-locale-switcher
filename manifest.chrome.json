@@ -10,7 +10,8 @@
     "tabs"
   ],
   "host_permissions": [
-    "*://*.be/*"
+    "*://*.be/*",
+    "*://*.aliexpress.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -28,7 +29,8 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*.be/*"
+        "*://*.be/*",
+        "*://*.aliexpress.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

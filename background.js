@@ -1,7 +1,8 @@
 /**
  * No Dutch Please - Background Script
  * Lightweight, privacy-friendly Manifest V3 extension for Chromium and Firefox.
- * Forces French locale on Belgian (.be) websites while keeping the rest of the web in English.
+ * Forces French locale on Belgian (.be) websites and international sites (e.g. nl.aliexpress.com)
+ * while keeping the rest of the web in your preferred browser language.
  */
 
 // Browser API namespace shim for cross-browser compatibility
@@ -21,7 +22,7 @@ const memorySessionStore = {
 
 /**
  * Extracts primary registrable domain from hostname.
- * e.g., "nl.vrt.be" -> "vrt.be", "sub.ulb.ac.be" -> "ulb.ac.be"
+ * e.g., "nl.vrt.be" -> "vrt.be", "nl.aliexpress.com" -> "aliexpress.com", "sub.ulb.ac.be" -> "ulb.ac.be"
  */
 function getPrimaryDomain(hostname) {
   if (!hostname || typeof hostname !== "string") return "";
@@ -65,12 +66,19 @@ function rewriteLocaleString(str, isBelgianDomain) {
     if (str === "Nl") return "Fr";
   }
 
-  // Regional Belgian code replacement: nl-be, nl_BE, etc. (valid on any domain)
+  // Regional Belgian code replacement: nl-be, be-nl, nl_BE, be_NL (valid on any domain)
   if (/^nl[-_]be$/i.test(str)) {
     const sep = str.includes("-") ? "-" : "_";
     const bePart = str.slice(3); // Preserves casing of "be" / "BE"
     const frPart = str.startsWith("NL") ? "FR" : (str.startsWith("Nl") ? "Fr" : "fr");
     return `${frPart}${sep}${bePart}`;
+  }
+
+  if (/^be[-_]nl$/i.test(str)) {
+    const sep = str.includes("-") ? "-" : "_";
+    const bePart = str.slice(0, 2);
+    const frPart = str.slice(3) === "NL" ? "FR" : "fr";
+    return `${bePart}${sep}${frPart}`;
   }
 
   return str;
@@ -88,22 +96,31 @@ function isDutchUrl(inputUrl) {
   }
 
   const hostname = urlObj.hostname.toLowerCase();
-  const isBeDomain = hostname.endsWith(".be") || hostname === "be";
+  const hostParts = hostname.split(".");
+  const tld = hostParts[hostParts.length - 1];
+  const isBeDomain = tld === "be" || hostname === "be";
 
-  // Check subdomain
-  if (isBeDomain) {
-    const hostParts = hostname.split(".");
-    if (hostParts.length > 2) {
-      const sub = hostParts[0].toLowerCase();
-      if (sub === "nl" || sub === "nl-be" || sub === "nl_be") return true;
-    }
+  // Check subdomains (excluding genuine .nl Netherlands domains)
+  if (hostParts.length > 2 && tld !== "nl") {
+    const sub = hostParts[0].toLowerCase();
+    if (sub === "nl" || sub === "nl-be" || sub === "nl_be") return true;
   }
 
   // Check path segments
   const segments = urlObj.pathname.split("/");
-  for (const seg of segments) {
-    if (isBeDomain && /^nl$/i.test(seg)) return true;
-    if (/^nl[-_]be$/i.test(seg)) return true;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i].toLowerCase();
+
+    // Two-segment Belgian combinations: /be/nl/ or /nl/be/
+    if (i + 1 < segments.length) {
+      const nextSeg = segments[i + 1].toLowerCase();
+      if ((seg === "be" && nextSeg === "nl") || (seg === "nl" && nextSeg === "be")) {
+        return true;
+      }
+    }
+
+    if (/^(nl[-_]be|be[-_]nl)$/i.test(seg)) return true;
+    if (isBeDomain && seg === "nl") return true;
   }
 
   // Check query parameters
@@ -111,8 +128,9 @@ function isDutchUrl(inputUrl) {
   const searchParams = new URLSearchParams(urlObj.search);
   for (const [key, val] of searchParams.entries()) {
     if (langKeyRegex.test(key)) {
-      if (isBeDomain && /^nl$/i.test(val)) return true;
-      if (/^nl[-_]be$/i.test(val)) return true;
+      const v = val.toLowerCase();
+      if (v === "nl-be" || v === "nl_be" || v === "be-nl" || v === "be_nl") return true;
+      if (isBeDomain && v === "nl") return true;
     }
   }
 
@@ -121,6 +139,7 @@ function isDutchUrl(inputUrl) {
 
 /**
  * Smart URL Rewriter (nl -> fr)
+ * Supports Belgian .be domains and international sites (e.g. nl.aliexpress.com, apple.com/be-nl/)
  * Returns rewritten URL string if changes were made, or null if untouched.
  */
 function rewriteUrl(inputUrl) {
@@ -136,48 +155,67 @@ function rewriteUrl(inputUrl) {
   }
 
   const hostname = urlObj.hostname.toLowerCase();
-  const isBeDomain = hostname.endsWith(".be") || hostname === "be";
+  const hostParts = hostname.split(".");
+  const tld = hostParts[hostParts.length - 1];
+  const isBeDomain = tld === "be" || hostname === "be";
 
   let changed = false;
 
-  // 1. Subdomain rewriting (only on .be domains)
-  if (isBeDomain) {
-    const hostParts = urlObj.hostname.split(".");
-    if (hostParts.length > 2) {
-      const sub = hostParts[0];
-      const subLower = sub.toLowerCase();
-      if (subLower === "nl") {
-        hostParts[0] = sub === "NL" ? "FR" : "fr";
-        urlObj.hostname = hostParts.join(".");
-        changed = true;
-      } else if (subLower === "nl-be" || subLower === "nl_be") {
-        const sep = sub.includes("-") ? "-" : "_";
-        hostParts[0] = (sub.startsWith("NL") ? "FR" : "fr") + sep + sub.slice(3);
-        urlObj.hostname = hostParts.join(".");
-        changed = true;
-      }
+  // 1. Subdomain rewriting:
+  // Rewrites "nl." to "fr." on .be domains and international sites (e.g. nl.aliexpress.com -> fr.aliexpress.com)
+  // Never touches genuine Netherlands websites ending in .nl (e.g. nos.nl, nl.example.nl)
+  if (hostParts.length > 2 && tld !== "nl") {
+    const sub = hostParts[0];
+    const subLower = sub.toLowerCase();
+
+    if (subLower === "nl") {
+      hostParts[0] = sub === "NL" ? "FR" : "fr";
+      urlObj.hostname = hostParts.join(".");
+      changed = true;
+    } else if (subLower === "nl-be" || subLower === "nl_be") {
+      const sep = sub.includes("-") ? "-" : "_";
+      hostParts[0] = (sub.startsWith("NL") ? "FR" : "fr") + sep + sub.slice(3);
+      urlObj.hostname = hostParts.join(".");
+      changed = true;
     }
   }
 
-  // 2. Path segments rewriting (only the first matching locale segment)
+  // 2. Path segments rewriting
   const segments = urlObj.pathname.split("/");
   let pathChanged = false;
-  const newSegments = [];
 
-  for (const seg of segments) {
-    if (!pathChanged) {
-      const rewritten = rewriteLocaleString(seg, isBeDomain);
-      if (rewritten !== seg) {
-        newSegments.push(rewritten);
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const segLower = seg.toLowerCase();
+
+    // Two-segment Belgian combinations: /be/nl/ -> /be/fr/, /nl/be/ -> /fr/be/
+    if (i + 1 < segments.length) {
+      const nextSeg = segments[i + 1];
+      const nextLower = nextSeg.toLowerCase();
+
+      if (segLower === "be" && nextLower === "nl") {
+        segments[i + 1] = nextSeg === "NL" ? "FR" : "fr";
         pathChanged = true;
-        continue;
+        break;
+      }
+      if (segLower === "nl" && nextLower === "be") {
+        segments[i] = seg === "NL" ? "FR" : "fr";
+        pathChanged = true;
+        break;
       }
     }
-    newSegments.push(seg);
+
+    // Single-segment replacement: /nl/ on .be, or /nl-be/, /be-nl/ on any domain
+    const rewritten = rewriteLocaleString(seg, isBeDomain);
+    if (rewritten !== seg) {
+      segments[i] = rewritten;
+      pathChanged = true;
+      break;
+    }
   }
 
   if (pathChanged) {
-    urlObj.pathname = newSegments.join("/");
+    urlObj.pathname = segments.join("/");
     changed = true;
   }
 
@@ -297,7 +335,7 @@ async function resetSessionBypass(domain) {
 
 /**
  * Synchronizes declarativeNetRequest dynamic rules.
- * Intercepts *://*.be/* requests and sets Accept-Language to French,
+ * Intercepts *://*.be/* and *://*.aliexpress.com/* requests and sets Accept-Language to French,
  * excluding domains in whitelist (storage.sync) and sessionBypassed (storage.session).
  */
 async function syncDnrRules() {
@@ -325,7 +363,7 @@ async function syncDnrRules() {
     .filter(Boolean);
 
   const condition = {
-    regexFilter: "^https?://[^/:]+\\.be(:[0-9]+)?/",
+    regexFilter: "^https?://([^/:]+\\.)?([^/:]+\\.be|aliexpress\\.com)(:[0-9]+)?/",
     resourceTypes: ["main_frame", "sub_frame", "xmlhttprequest"]
   };
 
@@ -400,7 +438,12 @@ async function refreshTabBadge(tabId, url) {
   }
 
   const hostname = urlObj.hostname.toLowerCase();
-  const isBe = hostname.endsWith(".be") || hostname === "be";
+  const hostParts = hostname.split(".");
+  const tld = hostParts[hostParts.length - 1];
+  const isBe = tld === "be" || hostname === "be";
+  const isAliexpress = hostname.includes("aliexpress.com");
+  const isFrenchSub = hostParts.length > 2 && hostParts[0] === "fr";
+
   const { enabled, whitelist } = await getSyncData();
 
   if (!enabled) {
@@ -419,7 +462,7 @@ async function refreshTabBadge(tabId, url) {
     return;
   }
 
-  if (isBe) {
+  if (isBe || isAliexpress || isFrenchSub || isDutchUrl(url)) {
     await updateBadge(tabId, "active");
   } else {
     await updateBadge(tabId, "idle");
@@ -445,7 +488,9 @@ async function handleUrlNavigation(tabId, url) {
   }
 
   const hostname = urlObj.hostname.toLowerCase();
-  const isBeDomain = hostname.endsWith(".be") || hostname === "be";
+  const hostParts = hostname.split(".");
+  const tld = hostParts[hostParts.length - 1];
+  const isBeDomain = tld === "be" || hostname === "be";
 
   // Check global enable state
   const { enabled, whitelist } = await getSyncData();
@@ -509,7 +554,10 @@ async function handleUrlNavigation(tabId, url) {
     }
   } else {
     // URL does not need rewrite
-    if (isBeDomain) {
+    const isAliexpress = hostname.includes("aliexpress.com");
+    const isFrenchSub = hostParts.length > 2 && hostParts[0] === "fr";
+
+    if (isBeDomain || isAliexpress || isFrenchSub) {
       await updateBadge(tabId, "active");
     } else {
       await updateBadge(tabId, "idle");
@@ -555,13 +603,19 @@ async function getStatusForUrl(url) {
   let hostname = "";
   let primaryDomain = "";
   let isBe = false;
+  let isAliexpress = false;
+  let isFrenchSub = false;
 
   if (url && typeof url === "string") {
     try {
       const u = new URL(url);
       hostname = u.hostname.toLowerCase();
       primaryDomain = getPrimaryDomain(hostname);
-      isBe = hostname.endsWith(".be") || hostname === "be";
+      const hostParts = hostname.split(".");
+      const tld = hostParts[hostParts.length - 1];
+      isBe = tld === "be" || hostname === "be";
+      isAliexpress = hostname.includes("aliexpress.com");
+      isFrenchSub = hostParts.length > 2 && hostParts[0] === "fr";
     } catch {}
   }
 
@@ -569,7 +623,7 @@ async function getStatusForUrl(url) {
   const isSessionBypassed = isDomainExcluded(hostname, sessionBypassed);
 
   let state = "idle";
-  let statusText = "Not a .be site (Inactive)";
+  let statusText = "Non-Belgian domain (Inactive)";
 
   if (!enabled) {
     state = "disabled";
@@ -583,6 +637,12 @@ async function getStatusForUrl(url) {
   } else if (isBe) {
     state = "active";
     statusText = "Active — Forcing French (fr-FR)";
+  } else if (isAliexpress) {
+    state = "active";
+    statusText = "Active (AliExpress) — Forcing French (fr.aliexpress.com)";
+  } else if (isFrenchSub) {
+    state = "active";
+    statusText = "Active — French subdomain (fr.*)";
   }
 
   return {
