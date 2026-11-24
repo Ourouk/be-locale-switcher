@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const zlib = require('zlib');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const CHROME_MANIFEST = path.join(ROOT_DIR, 'manifest.chrome.json');
@@ -54,23 +54,130 @@ function activate(browser) {
   }
 }
 
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(buf) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    crc = CRC32_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function collectFiles(items, rootDir) {
+  const files = [];
+  for (const item of items) {
+    const absPath = path.join(rootDir, item);
+    if (!fs.existsSync(absPath)) continue;
+    const stat = fs.statSync(absPath);
+    if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(absPath, { withFileTypes: true })) {
+        const relEntry = path.join(item, entry.name);
+        if (entry.isDirectory()) {
+          files.push(...collectFiles([relEntry], rootDir));
+        } else if (entry.isFile()) {
+          files.push(relEntry);
+        }
+      }
+    } else if (stat.isFile()) {
+      files.push(item);
+    }
+  }
+  return files;
+}
+
+function toDosTimeDate(date) {
+  const year = Math.max(1980, date.getFullYear()) - 1980;
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hours = date.getHours();
+  const minutes = date.getMinutes();
+  const seconds = Math.floor(date.getSeconds() / 2);
+  return {
+    dosTime: (hours << 11) | (minutes << 5) | seconds,
+    dosDate: (year << 9) | (month << 5) | day
+  };
+}
+
 function createZipArchive(destZip, items) {
-  // No shell: paths travel as argv, so quotes in names cannot escape.
-  const pythonScript = `import sys, json, zipfile, os
-dest = sys.argv[1]
-items = json.loads(sys.argv[2])
-with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
-  for item in items:
-    if os.path.isdir(item):
-      for root, dirs, files in os.walk(item):
-        for f in files:
-          full_path = os.path.join(root, f)
-          rel_path = os.path.relpath(full_path, ".")
-          z.write(full_path, rel_path)
-    elif os.path.exists(item):
-      z.write(item, os.path.basename(item))
-`;
-  execFileSync("python3", ["-c", pythonScript, destZip, JSON.stringify(items)], { cwd: ROOT_DIR });
+  const relFiles = collectFiles(items, ROOT_DIR);
+  const localChunks = [];
+  const centralChunks = [];
+  let offset = 0;
+
+  for (const relPath of relFiles) {
+    const fullPath = path.join(ROOT_DIR, relPath);
+    const raw = fs.readFileSync(fullPath);
+    const stat = fs.statSync(fullPath);
+    const { dosTime, dosDate } = toDosTimeDate(stat.mtime);
+    const deflated = zlib.deflateRawSync(raw);
+    const useDeflate = deflated.length < raw.length;
+    const payload = useDeflate ? deflated : raw;
+    const method = useDeflate ? 8 : 0;
+    const crc = crc32(raw);
+    const nameBuf = Buffer.from(relPath.split(path.sep).join('/'), 'utf8');
+
+    // Local file header (30 bytes + filename)
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4); // Version needed to extract (2.0)
+    localHeader.writeUInt16LE(0x0800, 6); // UTF-8 filename flag
+    localHeader.writeUInt16LE(method, 8);
+    localHeader.writeUInt16LE(dosTime, 10);
+    localHeader.writeUInt16LE(dosDate, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(payload.length, 18);
+    localHeader.writeUInt32LE(raw.length, 22);
+    localHeader.writeUInt16LE(nameBuf.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+
+    // Central directory header (46 bytes + filename)
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4); // Version made by
+    centralHeader.writeUInt16LE(20, 6); // Version needed
+    centralHeader.writeUInt16LE(0x0800, 8); // UTF-8 flag
+    centralHeader.writeUInt16LE(method, 10);
+    centralHeader.writeUInt16LE(dosTime, 12);
+    centralHeader.writeUInt16LE(dosDate, 14);
+    centralHeader.writeUInt32LE(crc, 16);
+    centralHeader.writeUInt32LE(payload.length, 20);
+    centralHeader.writeUInt32LE(raw.length, 24);
+    centralHeader.writeUInt16LE(nameBuf.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+
+    localChunks.push(localHeader, nameBuf, payload);
+    centralChunks.push(centralHeader, nameBuf);
+    offset += localHeader.length + nameBuf.length + payload.length;
+  }
+
+  const centralDirBuf = Buffer.concat(centralChunks);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(relFiles.length, 8);
+  eocd.writeUInt16LE(relFiles.length, 10);
+  eocd.writeUInt32LE(centralDirBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  fs.writeFileSync(destZip, Buffer.concat([...localChunks, centralDirBuf, eocd]));
 }
 
 function packageExtensions() {

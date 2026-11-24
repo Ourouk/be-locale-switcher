@@ -20,6 +20,7 @@ const statusDesc = document.getElementById("status-desc");
 const siteActionBtn = document.getElementById("site-action-btn");
 const siteActionIcon = document.getElementById("site-action-icon");
 const siteActionText = document.getElementById("site-action-text");
+const siteError = document.getElementById("site-error");
 
 // Custom Injected Domains Accordion
 const customAccordionBtn = document.getElementById("custom-accordion-btn");
@@ -27,6 +28,7 @@ const customAccordionContent = document.getElementById("custom-accordion-content
 const customCountLabel = document.getElementById("custom-count-label");
 const customDomainInput = document.getElementById("custom-domain-input");
 const addDomainBtn = document.getElementById("add-domain-btn");
+const customDomainError = document.getElementById("custom-domain-error");
 const customDomainItems = document.getElementById("custom-domain-items");
 
 // Excluded .BE Domains Section
@@ -75,6 +77,7 @@ async function refreshUI() {
 
     if (res) {
       currentStatus = res;
+      clearInlineError(siteError);
       renderStatus(res);
       renderCustomDomains(res.customDomains || []);
       renderExcludedDomains(res.excludedBeDomains || []);
@@ -169,17 +172,38 @@ function renderStatus(status) {
 }
 
 /**
- * Renders the custom injected domains list.
+ * Checks whether an active tab hostname equals or is a subdomain of a domain entry.
  */
-function renderCustomDomains(domains) {
-  customCountLabel.textContent = `Injected Custom Domains (${domains.length})`;
-  customDomainItems.innerHTML = "";
+function isHostnameMatching(hostname, domain) {
+  if (!hostname || !domain) return false;
+  const cleanHost = hostname.toLowerCase().replace(/^www\./, "");
+  const cleanDomain = domain.toLowerCase().replace(/^www\./, "");
+  return cleanHost === cleanDomain || cleanHost.endsWith("." + cleanDomain);
+}
+
+function showInlineError(el, message) {
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove("hidden");
+}
+
+function clearInlineError(el) {
+  if (!el) return;
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
+/**
+ * Renders a list of domains with remove buttons into a target UL container.
+ */
+function renderDomainList(container, domains, { emptyMessage, removeTitlePrefix, onRemove }) {
+  container.innerHTML = "";
 
   if (domains.length === 0) {
     const li = document.createElement("li");
     li.className = "domain-empty";
-    li.textContent = "No custom domains added yet.";
-    customDomainItems.appendChild(li);
+    li.textContent = emptyMessage;
+    container.appendChild(li);
     return;
   }
 
@@ -194,22 +218,31 @@ function renderCustomDomains(domains) {
     const delBtn = document.createElement("button");
     delBtn.className = "btn-remove";
     delBtn.type = "button";
-    delBtn.title = `Remove ${domain}`;
+    delBtn.title = `${removeTitlePrefix} ${domain}`;
     delBtn.textContent = "✕";
-    delBtn.addEventListener("click", async () => {
-      await api.runtime.sendMessage({
-        type: "REMOVE_CUSTOM_DOMAIN",
-        domain
-      });
-      await refreshUI();
-      if (currentTab?.id && currentStatus?.hostname?.includes(domain)) {
-        api.tabs.reload(currentTab.id);
-      }
-    });
+    delBtn.addEventListener("click", () => onRemove(domain));
 
     li.appendChild(span);
     li.appendChild(delBtn);
-    customDomainItems.appendChild(li);
+    container.appendChild(li);
+  });
+}
+
+/**
+ * Renders the custom injected domains list.
+ */
+function renderCustomDomains(domains) {
+  customCountLabel.textContent = `Injected Custom Domains (${domains.length})`;
+  renderDomainList(customDomainItems, domains, {
+    emptyMessage: "No custom domains added yet.",
+    removeTitlePrefix: "Remove",
+    onRemove: async (domain) => {
+      await api.runtime.sendMessage({ type: "REMOVE_CUSTOM_DOMAIN", domain });
+      await refreshUI();
+      if (currentTab?.id && isHostnameMatching(currentStatus?.hostname, domain)) {
+        api.tabs.reload(currentTab.id);
+      }
+    }
   });
 }
 
@@ -224,35 +257,16 @@ function renderExcludedDomains(domains) {
 
   excludedSection.classList.remove("hidden");
   excludedCountLabel.textContent = `Excluded .BE Sites (${domains.length})`;
-  excludedDomainItems.innerHTML = "";
-
-  domains.forEach((domain) => {
-    const li = document.createElement("li");
-    li.className = "domain-item";
-
-    const span = document.createElement("span");
-    span.className = "domain-item-text";
-    span.textContent = domain;
-
-    const delBtn = document.createElement("button");
-    delBtn.className = "btn-remove";
-    delBtn.type = "button";
-    delBtn.title = `Re-enable ${domain}`;
-    delBtn.textContent = "✕";
-    delBtn.addEventListener("click", async () => {
-      await api.runtime.sendMessage({
-        type: "TOGGLE_CURRENT_SITE",
-        domain
-      });
+  renderDomainList(excludedDomainItems, domains, {
+    emptyMessage: "No .be sites excluded.",
+    removeTitlePrefix: "Re-enable",
+    onRemove: async (domain) => {
+      await api.runtime.sendMessage({ type: "TOGGLE_CURRENT_SITE", domain });
       await refreshUI();
-      if (currentTab?.id && currentStatus?.hostname?.includes(domain)) {
+      if (currentTab?.id && isHostnameMatching(currentStatus?.hostname, domain)) {
         api.tabs.reload(currentTab.id);
       }
-    });
-
-    li.appendChild(span);
-    li.appendChild(delBtn);
-    excludedDomainItems.appendChild(li);
+    }
   });
 }
 
@@ -261,12 +275,17 @@ function renderExcludedDomains(domains) {
  */
 async function toggleCurrentSite() {
   if (!currentStatus || !currentStatus.hostname) return;
+  clearInlineError(siteError);
 
   try {
-    await api.runtime.sendMessage({
+    const res = await api.runtime.sendMessage({
       type: "TOGGLE_CURRENT_SITE",
       domain: currentStatus.hostname
     });
+    if (res?.status === "error") {
+      showInlineError(siteError, res.message || "Could not update this site");
+      return;
+    }
     await refreshUI();
     if (currentTab?.id) {
       api.tabs.reload(currentTab.id);
@@ -281,16 +300,25 @@ async function toggleCurrentSite() {
  */
 async function handleAddCustomDomain() {
   const val = customDomainInput.value.trim();
-  if (!val) return;
+  clearInlineError(customDomainError);
+  if (!val) {
+    showInlineError(customDomainError, "Enter a domain name (e.g. aliexpress.com)");
+    return;
+  }
 
   try {
-    await api.runtime.sendMessage({
+    const res = await api.runtime.sendMessage({
       type: "ADD_CUSTOM_DOMAIN",
       domain: val
     });
+    if (res?.status === "error") {
+      showInlineError(customDomainError, res.message || "Invalid domain");
+      return;
+    }
     customDomainInput.value = "";
     await refreshUI();
-    if (currentTab?.id && currentStatus?.hostname?.includes(val.toLowerCase())) {
+    const addedDomain = res?.domain || val;
+    if (currentTab?.id && isHostnameMatching(currentStatus?.hostname, addedDomain)) {
       api.tabs.reload(currentTab.id);
     }
   } catch (err) {
@@ -347,6 +375,7 @@ function setupEventListeners() {
 
   // Add Domain Button & Enter Key
   addDomainBtn.addEventListener("click", handleAddCustomDomain);
+  customDomainInput.addEventListener("input", () => clearInlineError(customDomainError));
   customDomainInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       handleAddCustomDomain();

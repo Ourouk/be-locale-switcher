@@ -76,6 +76,17 @@ async function runTests() {
     assert.strictEqual(normalizeDomain("ikea.com/"), "ikea.com");
     assert.strictEqual(normalizeDomain("www.google.com"), "google.com");
     assert.strictEqual(normalizeDomain("https://www.google.be/search?q=test"), "google.be");
+    assert.strictEqual(normalizeDomain("münchen.de"), "xn--mnchen-3ya.de");
+  });
+
+  it("rejects invalid domain inputs to prevent DNR crashes", () => {
+    assert.strictEqual(normalizeDomain("foo bar"), "");
+    assert.strictEqual(normalizeDomain("site..com"), "");
+    assert.strictEqual(normalizeDomain("-bad.com"), "");
+    assert.strictEqual(normalizeDomain("http://[::1]:8080/"), "");
+    assert.strictEqual(normalizeDomain("localhost"), "");
+    assert.strictEqual(normalizeDomain("invalid!"), "");
+    assert.strictEqual(normalizeDomain(""), "");
   });
 
   it("matches domains including subdomains", () => {
@@ -124,10 +135,10 @@ async function runTests() {
     assert.strictEqual(beRule.action.requestHeaders[0].header, "accept-language");
     assert.strictEqual(beRule.action.requestHeaders[0].value, FRENCH_ACCEPT_LANGUAGE);
     assert.strictEqual(beRule.condition.regexFilter, "^https?://[^/:]+\\.be(:[0-9]+)?/");
-    assert.strictEqual(beRule.condition.excludedDomains, undefined);
+    assert.strictEqual(beRule.condition.excludedRequestDomains, undefined);
   });
 
-  it("generates Rule 1 with excluded .be domains when specified", () => {
+  it("generates Rule 1 with excludedRequestDomains for .be exclusions", () => {
     const rules = buildDnrRules({
       enabled: true,
       targetLanguage: "fr",
@@ -135,10 +146,11 @@ async function runTests() {
       excludedBeDomains: ["vrt.be", "demorgen.be"]
     });
     assert.strictEqual(rules.length, 1);
-    assert.deepStrictEqual(rules[0].condition.excludedDomains, ["vrt.be", "demorgen.be"]);
+    assert.deepStrictEqual(rules[0].condition.excludedRequestDomains, ["vrt.be", "demorgen.be"]);
+    assert.strictEqual(rules[0].condition.excludedDomains, undefined);
   });
 
-  it("generates Rule 2 for custom domains whitelist", () => {
+  it("generates Rule 2 for custom domains whitelist using requestDomains", () => {
     const rules = buildDnrRules({
       enabled: true,
       targetLanguage: "fr",
@@ -150,7 +162,23 @@ async function runTests() {
     assert.strictEqual(customRule.id, RULE_ID_CUSTOM_DOMAINS);
     assert.strictEqual(customRule.action.type, "modifyHeaders");
     assert.strictEqual(customRule.action.requestHeaders[0].value, FRENCH_ACCEPT_LANGUAGE);
-    assert.deepStrictEqual(customRule.condition.domains, ["aliexpress.com", "ikea.com"]);
+    assert.deepStrictEqual(customRule.condition.requestDomains, ["aliexpress.com", "ikea.com"]);
+    assert.strictEqual(customRule.condition.domains, undefined);
+  });
+
+  it("sanitizes invalid or duplicate domains in buildDnrRules and caps at 100", () => {
+    const oversized = Array.from({ length: 120 }, (_, i) => `site${i}.com`);
+    oversized.unshift("bad domain", "https://www.google.com/search", "google.com");
+    const rules = buildDnrRules({
+      enabled: true,
+      targetLanguage: "fr",
+      customDomains: oversized,
+      excludedBeDomains: ["invalid domain"]
+    });
+    assert.strictEqual(rules[0].condition.excludedRequestDomains, undefined);
+    assert.strictEqual(rules[1].condition.requestDomains.length, 100);
+    assert.strictEqual(rules[1].condition.requestDomains[0], "google.com");
+    assert.strictEqual(rules[1].condition.requestDomains.includes("bad domain"), false);
   });
 
   it("generates Dutch headers when target language is Dutch", () => {
@@ -262,7 +290,7 @@ async function runTests() {
     );
   });
 
-  it("rewrites query parameters for language/locale", () => {
+  it("rewrites query parameters for language/locale safely via URLSearchParams", () => {
     assert.strictEqual(
       fallbackRewriteUrl("https://site.be/?lang=nl"),
       "https://site.be/?lang=fr"
@@ -274,6 +302,14 @@ async function runTests() {
     assert.strictEqual(
       fallbackRewriteUrl("https://site.be/?q=search&hl=nl"),
       "https://site.be/?q=search&hl=fr"
+    );
+    assert.strictEqual(
+      fallbackRewriteUrl("https://site.be/?redirect=https%3A%2F%2Fother.com%2Fpath%3Ffoo%3Dbar&lang=nl"),
+      "https://site.be/?redirect=https%3A%2F%2Fother.com%2Fpath%3Ffoo%3Dbar&lang=fr"
+    );
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.com/search?q=table&lr=lang_nl", "fr", ["google.com"]),
+      "https://www.google.com/search?q=table&lr=lang_fr&hl=fr"
     );
   });
 
@@ -361,6 +397,11 @@ async function runTests() {
       null
     );
 
+    // Non-search Google services (Gmail, Drive) are never rewritten
+    assert.strictEqual(fallbackRewriteUrl("https://mail.google.com/", "fr", ["google.com"]), null);
+    assert.strictEqual(fallbackRewriteUrl("https://drive.google.com/", "fr", ["google.com"]), null);
+    assert.strictEqual(fallbackRewriteUrl("https://docs.google.com/", "fr", ["google.com"]), null);
+
     // Dutch mode
     assert.strictEqual(
       fallbackRewriteUrl("https://www.google.be/", "nl"),
@@ -384,14 +425,14 @@ async function runTests() {
     assert.strictEqual(content.permissions.includes("declarativeNetRequest"), true);
     assert.strictEqual(content.permissions.includes("storage"), true);
     assert.strictEqual(content.permissions.includes("tabs"), true);
-    assert.strictEqual(content.host_permissions.includes("*://*.be/*"), true);
-    assert.strictEqual(content.host_permissions.includes("*://*/*"), true);
+    assert.deepStrictEqual(content.host_permissions, ["*://*/*"]);
     assert.strictEqual(content.content_scripts, undefined); // Zero content scripts!
   });
 
   it("validates manifest.chrome.json syntax (Chromium service worker)", () => {
     const content = JSON.parse(fs.readFileSync(path.join(__dirname, "../manifest.chrome.json"), "utf8"));
     assert.strictEqual(content.manifest_version, 3);
+    assert.deepStrictEqual(content.host_permissions, ["*://*/*"]);
     assert.strictEqual(content.background.service_worker, "background.js");
     assert.strictEqual(content.content_scripts, undefined);
   });
@@ -399,9 +440,137 @@ async function runTests() {
   it("validates manifest.firefox.json syntax (Gecko background.scripts)", () => {
     const content = JSON.parse(fs.readFileSync(path.join(__dirname, "../manifest.firefox.json"), "utf8"));
     assert.strictEqual(content.manifest_version, 3);
+    assert.deepStrictEqual(content.host_permissions, ["*://*/*"]);
     assert.deepStrictEqual(content.background.scripts, ["background.js"]);
     assert.strictEqual(content.browser_specific_settings.gecko.id, "be-locale-switcher@extension");
     assert.strictEqual(content.content_scripts, undefined);
+  });
+
+  // 7. Concurrency Lock, Sync Caching, Session Persistence & Message Validation
+  console.log("\n▶ 7. Concurrency, Session Persistence & Message Handling");
+  await itAsync("serializes concurrent DNR updates and deduplicates identical rules", async () => {
+    const prevBrowser = globalThis.browser;
+    const syncStore = { enabled: true, targetLanguage: "fr", customDomains: [], excludedBeDomains: [] };
+    const sessionStore = {};
+    const onChangedListeners = [];
+    const onMessageListeners = [];
+    let activeDnrCalls = 0;
+    let maxConcurrentDnrCalls = 0;
+    let totalDnrCalls = 0;
+    let syncGetCalls = 0;
+
+    globalThis.browser = {
+      storage: {
+        sync: {
+          get: async () => {
+            syncGetCalls++;
+            return { ...syncStore };
+          },
+          set: async (updates) => {
+            const changes = {};
+            for (const [k, v] of Object.entries(updates)) {
+              changes[k] = { oldValue: syncStore[k], newValue: v };
+              syncStore[k] = v;
+            }
+            for (const fn of onChangedListeners) fn(changes, "sync");
+          }
+        },
+        session: {
+          get: async () => ({ ...sessionStore }),
+          set: async (updates) => Object.assign(sessionStore, updates)
+        },
+        onChanged: {
+          addListener: (fn) => onChangedListeners.push(fn)
+        }
+      },
+      declarativeNetRequest: {
+        updateDynamicRules: async () => {
+          activeDnrCalls++;
+          totalDnrCalls++;
+          maxConcurrentDnrCalls = Math.max(maxConcurrentDnrCalls, activeDnrCalls);
+          await new Promise((r) => setTimeout(r, 15));
+          activeDnrCalls--;
+        }
+      },
+      tabs: {
+        update: async () => {}
+      },
+      action: {
+        setBadgeText: async () => {},
+        setBadgeBackgroundColor: async () => {}
+      },
+      runtime: {
+        onMessage: {
+          addListener: (fn) => onMessageListeners.push(fn)
+        }
+      }
+    };
+
+    try {
+      const bgPath = require.resolve("../background.js");
+      delete require.cache[bgPath];
+      const isolatedBg = require("../background.js");
+
+      // Fire overlapping syncDnrRules calls
+      await Promise.all([isolatedBg.syncDnrRules(), isolatedBg.syncDnrRules()]);
+      assert.strictEqual(maxConcurrentDnrCalls, 1);
+      assert.strictEqual(totalDnrCalls, 1);
+
+      // Message triggers storage.onChanged + explicit syncDnrRules, still serialized & deduplicated
+      const sendMsg = (msg) =>
+        new Promise((resolve) => {
+          onMessageListeners[0](msg, {}, resolve);
+        });
+
+      const badRes = await sendMsg({ type: "ADD_CUSTOM_DOMAIN", domain: "not a valid domain" });
+      assert.strictEqual(badRes.status, "error");
+
+      const beRes = await sendMsg({ type: "ADD_CUSTOM_DOMAIN", domain: "vrt.be" });
+      assert.strictEqual(beRes.status, "error");
+
+      const okRes = await sendMsg({ type: "ADD_CUSTOM_DOMAIN", domain: "https://www.google.com/" });
+      assert.strictEqual(okRes.status, "ok");
+      assert.strictEqual(okRes.domain, "google.com");
+      assert.strictEqual(maxConcurrentDnrCalls, 1);
+      assert.strictEqual(totalDnrCalls, 2); // Only 1 extra DNR update despite storage.onChanged + handler!
+
+      // Verify getSyncData reads from cache without calling storage.sync.get again
+      const callsBefore = syncGetCalls;
+      await isolatedBg.getSyncData();
+      await isolatedBg.getSyncData();
+      assert.strictEqual(syncGetCalls, callsBefore);
+
+      // Enforce 100-domain cap cleanly
+      syncStore.customDomains = Array.from({ length: 100 }, (_, i) => `d${i}.com`);
+      for (const fn of onChangedListeners) {
+        fn({ customDomains: { newValue: syncStore.customDomains } }, "sync");
+      }
+      const capRes = await sendMsg({ type: "ADD_CUSTOM_DOMAIN", domain: "overflow.com" });
+      assert.strictEqual(capRes.status, "error");
+
+      // Simulate fallback redirect + bounce detection & verify session persistence across SW restart
+      const tabUpdates = [];
+      globalThis.browser.tabs.update = async (tabId, props) => tabUpdates.push({ tabId, ...props });
+      await isolatedBg.handleUrlNavigationFallback(42, "https://www.bouncing.be/nl/");
+      assert.strictEqual(tabUpdates.length, 1);
+      assert.strictEqual(tabUpdates[0].url, "https://www.bouncing.be/fr/");
+      assert.strictEqual(Boolean(sessionStore.tabRedirectHistory["42"]), true);
+
+      // Simulate server bounce after >800ms
+      isolatedBg.tabRedirectHistory.get(42).timestamp = Date.now() - 1000;
+      await isolatedBg.handleUrlNavigationFallback(42, "https://www.bouncing.be/nl/");
+      assert.strictEqual(sessionStore.sessionBypassedHosts.includes("bouncing.be"), true);
+
+      // Simulate SW restart (cold start restores bypass from storage.session)
+      delete require.cache[bgPath];
+      const restartedBg = require("../background.js");
+      await restartedBg.handleUrlNavigationFallback(42, "https://www.bouncing.be/nl/");
+      assert.strictEqual(restartedBg.sessionBypassedHosts.has("bouncing.be"), true);
+      assert.strictEqual(tabUpdates.length, 1); // No further redirect!
+    } finally {
+      globalThis.browser = prevBrowser;
+      delete require.cache[require.resolve("../background.js")];
+    }
   });
 
   console.log(`\n========================================`);

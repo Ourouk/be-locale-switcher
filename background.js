@@ -15,15 +15,27 @@ const api = globalThis.browser ?? globalThis.chrome ?? {};
 // Core Constants
 const RULE_ID_BE_DOMAINS = 1;
 const RULE_ID_CUSTOM_DOMAINS = 2;
+const MAX_DNR_DOMAINS = 100;
 
 const FRENCH_ACCEPT_LANGUAGE = "fr-FR,fr;q=0.9,fr-BE;q=0.8,en;q=0.7";
 const DUTCH_ACCEPT_LANGUAGE = "nl-BE,nl;q=0.9,nl-NL;q=0.8,en;q=0.7";
 
-// In-memory fallback tracking & loop protection
-const tabRedirectHistory = new Map(); // tabId -> { fromUrl, toUrl, timestamp, domain }
-const sessionBypassedHosts = new Set(); // hostnames bypassed after server bounce-back
+const VALID_DOMAIN_REGEX = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+const GOOGLE_SEARCH_HOSTS = new Set(["google.be", "www.google.be", "google.com", "www.google.com"]);
 
-// In-memory sync fallback for test environments
+const SESSION_BYPASS_KEY = "sessionBypassedHosts";
+const TAB_HISTORY_KEY = "tabRedirectHistory";
+const SESSION_HISTORY_TTL_MS = 10000;
+
+// Fallback tracking & loop protection (persisted in storage.session across SW restarts)
+const tabRedirectHistory = new Map(); // tabId -> { fromUrl, toUrl, timestamp, domain }
+const sessionBypassedHosts = new Set(); // normalized hostnames bypassed after server bounce-back
+let sessionLoaded = false;
+let sessionLoadPromise = null;
+
+// Sync storage cache and fallback store for test environments
+let cachedSyncData = null;
+let syncLoadPromise = null;
 let memorySyncStore = {
   enabled: true,
   targetLanguage: "fr",
@@ -61,13 +73,22 @@ function isBeDomain(hostname) {
   return clean === "be" || clean.endsWith(".be");
 }
 
+/**
+ * Normalizes a URL or domain string into a validated domain name, stripping
+ * protocol, port, path, and leading "www.". Returns "" if invalid.
+ */
 function normalizeDomain(input) {
   if (!input || typeof input !== "string") return "";
   let clean = input.trim().toLowerCase();
-  clean = clean.replace(/^[a-z]+:\/\//i, "");
-  clean = clean.split("/")[0].split("?")[0].split("#")[0].split(":")[0];
-  clean = clean.replace(/^www\./i, "");
-  return clean;
+  if (!clean) return "";
+  try {
+    const withProto = /^[a-z][a-z0-9+.-]*:\/\//i.test(clean) ? clean : `http://${clean}`;
+    clean = new URL(withProto).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+  clean = clean.replace(/^www\./i, "").replace(/\.+$/, "");
+  return VALID_DOMAIN_REGEX.test(clean) ? clean : "";
 }
 
 function isDomainMatching(hostname, domainList = []) {
@@ -191,46 +212,36 @@ function fallbackRewriteUrl(inputUrl, targetLang = "fr", customDomains = [], exc
   // 3. Query parameters (e.g. ?lang=nl -> ?lang=fr on targeted sites)
   if (isTargetSite && urlObj.search.length > 1) {
     const langKeyRegex = /^(.*_)?(lang|locale|language|lng|hl|lr)$/i;
-    let queryChanged = false;
-    const out = urlObj.search.slice(1).split("&").map((pair) => {
-      const eq = pair.indexOf("=");
-      const key = eq < 0 ? pair : pair.slice(0, eq);
-      const val = eq < 0 ? "" : pair.slice(eq + 1);
+    const updates = [];
 
-      if (!langKeyRegex.test(decodeURIComponent(key))) return pair;
-      const decodedVal = decodeURIComponent(val);
-      if (decodedVal.toLowerCase() === source) {
-        queryChanged = true;
-        return `${key}=${encodeURIComponent(applyCase(decodedVal, target))}`;
-      }
-      if (new RegExp(`^${source}[-_]be$`, "i").test(decodedVal)) {
-        const sep = decodedVal.includes("-") ? "-" : "_";
-        const bePart = decodedVal.slice(3);
-        const targetPart = applyCase(decodedVal.slice(0, 2), target);
-        queryChanged = true;
-        return `${key}=${encodeURIComponent(`${targetPart}${sep}${bePart}`)}`;
-      }
-      if (new RegExp(`^lang_${source}$`, "i").test(decodedVal)) {
-        queryChanged = true;
-        return `${key}=${encodeURIComponent(`lang_${target}`)}`;
-      }
-      return pair;
-    });
+    for (const [key, val] of urlObj.searchParams.entries()) {
+      if (!langKeyRegex.test(key)) continue;
 
-    if (queryChanged) {
-      urlObj.search = "?" + out.join("&");
+      if (val.toLowerCase() === source) {
+        updates.push([key, applyCase(val, target)]);
+      } else if (new RegExp(`^${source}[-_]be$`, "i").test(val)) {
+        const sep = val.includes("-") ? "-" : "_";
+        const bePart = val.slice(3);
+        const targetPart = applyCase(val.slice(0, 2), target);
+        updates.push([key, `${targetPart}${sep}${bePart}`]);
+      } else if (new RegExp(`^lang_${source}$`, "i").test(val)) {
+        updates.push([key, `lang_${target}`]);
+      }
+    }
+
+    for (const [key, newVal] of updates) {
+      urlObj.searchParams.set(key, newVal);
       changed = true;
     }
   }
 
-  // 4. Google interface language enforcement (on targeted sites: google.be or custom google.com)
-  const isGoogle = hostname === "google.be" || hostname.endsWith(".google.be") ||
-                   hostname === "google.com" || hostname.endsWith(".google.com");
-  if (isTargetSite && isGoogle) {
+  // 4. Google Search interface language enforcement (on targeted sites: google.be or custom google.com)
+  if (isTargetSite && GOOGLE_SEARCH_HOSTS.has(hostname)) {
     const p = urlObj.pathname.toLowerCase();
     if (p === "/" || p === "/search" || p === "/webhp") {
       const currentHl = urlObj.searchParams.get("hl");
-      if (!currentHl || currentHl.toLowerCase() === source || currentHl.toLowerCase().startsWith(source + "-") || currentHl.toLowerCase().startsWith(source + "_")) {
+      const lowerHl = currentHl ? currentHl.toLowerCase() : "";
+      if (!currentHl || lowerHl === source || lowerHl.startsWith(source + "-") || lowerHl.startsWith(source + "_")) {
         urlObj.searchParams.set("hl", target);
         changed = true;
       }
@@ -238,6 +249,65 @@ function fallbackRewriteUrl(inputUrl, targetLang = "fr", customDomains = [], exc
   }
 
   return changed ? urlObj.toString() : null;
+}
+
+// =============================================================================
+// Session Persistence & Navigation Fallback
+// =============================================================================
+
+async function ensureSessionLoaded() {
+  if (sessionLoaded || !api.storage?.session) {
+    sessionLoaded = true;
+    return;
+  }
+  if (!sessionLoadPromise) {
+    sessionLoadPromise = api.storage.session
+      .get([SESSION_BYPASS_KEY, TAB_HISTORY_KEY])
+      .then((data) => {
+        if (Array.isArray(data[SESSION_BYPASS_KEY])) {
+          for (const host of data[SESSION_BYPASS_KEY]) {
+            sessionBypassedHosts.add(host);
+          }
+        }
+        if (data[TAB_HISTORY_KEY] && typeof data[TAB_HISTORY_KEY] === "object") {
+          const cutoff = Date.now() - SESSION_HISTORY_TTL_MS;
+          for (const [tabKey, entry] of Object.entries(data[TAB_HISTORY_KEY])) {
+            if (entry && entry.timestamp > cutoff) {
+              tabRedirectHistory.set(Number(tabKey), entry);
+            }
+          }
+        }
+        sessionLoaded = true;
+      })
+      .catch((err) => {
+        console.warn("[BE Locale Switcher] storage.session.get error:", err);
+      })
+      .finally(() => {
+        sessionLoadPromise = null;
+      });
+  }
+  await sessionLoadPromise;
+}
+
+async function persistSessionState() {
+  if (!api.storage?.session) return;
+  const cutoff = Date.now() - SESSION_HISTORY_TTL_MS;
+  const historyObj = {};
+  for (const [tabId, entry] of tabRedirectHistory.entries()) {
+    if (entry && entry.timestamp > cutoff) {
+      historyObj[String(tabId)] = entry;
+    } else {
+      tabRedirectHistory.delete(tabId);
+    }
+  }
+  try {
+    await api.storage.session.set({
+      [SESSION_BYPASS_KEY]: Array.from(sessionBypassedHosts),
+      [TAB_HISTORY_KEY]: historyObj
+    });
+  } catch (err) {
+    console.warn("[BE Locale Switcher] storage.session.set error:", err);
+  }
 }
 
 /**
@@ -254,32 +324,39 @@ async function handleUrlNavigationFallback(tabId, url) {
   }
   if (urlObj.protocol !== "http:" && urlObj.protocol !== "https:") return;
 
+  await ensureSessionLoaded();
+
   const hostname = urlObj.hostname.toLowerCase();
+  const bypassKey = normalizeDomain(hostname) || hostname;
   const syncData = await getSyncData();
   const { enabled, targetLanguage, customDomains, excludedBeDomains } = syncData;
 
   if (!enabled) return;
 
   // If this host was bypassed due to server bounce-back, skip fallback redirect
-  if (sessionBypassedHosts.has(hostname)) return;
+  if (sessionBypassedHosts.has(bypassKey)) return;
 
   const now = Date.now();
   const last = tabRedirectHistory.get(tabId);
 
   // 1. Ignore in-flight browser events for the original URL (within 800ms)
   if (last && (now - last.timestamp < 800)) {
-    if (url === last.fromUrl || url.replace(/\/$/, "") === last.fromUrl.replace(/\/$/, "")) {
+    if (url.replace(/\/$/, "") === last.fromUrl.replace(/\/$/, "")) {
       return;
     }
   }
 
   // 2. Loop Guard: If we redirected within 5s and server bounced back to fromUrl after >800ms
   if (last && (now - last.timestamp < 5000)) {
-    const isSameHost = hostname === last.domain || hostname.endsWith("." + last.domain);
-    if (isSameHost && url === last.fromUrl) {
+    const isSameHost =
+      hostname === last.domain ||
+      hostname.endsWith("." + last.domain) ||
+      last.domain.endsWith("." + hostname);
+    if (isSameHost && url.replace(/\/$/, "") === last.fromUrl.replace(/\/$/, "")) {
       console.warn(`[BE Locale Switcher] Server bounce detected on ${hostname}. Bypassing fallback for this session.`);
-      sessionBypassedHosts.add(hostname);
+      sessionBypassedHosts.add(bypassKey);
       tabRedirectHistory.delete(tabId);
+      await persistSessionState();
       return;
     }
   }
@@ -293,6 +370,7 @@ async function handleUrlNavigationFallback(tabId, url) {
       domain: hostname,
       timestamp: now
     });
+    await persistSessionState();
 
     try {
       await api.tabs.update(tabId, { url: rewrittenUrl });
@@ -303,28 +381,63 @@ async function handleUrlNavigationFallback(tabId, url) {
 }
 
 // =============================================================================
-// Storage Access
+// Storage Access (with In-Memory Cache)
 // =============================================================================
 
+function normalizeSyncData(data = {}) {
+  return {
+    enabled: data.enabled !== undefined ? !!data.enabled : true,
+    targetLanguage: data.targetLanguage === "nl" ? "nl" : "fr",
+    customDomains: Array.isArray(data.customDomains) ? data.customDomains : [],
+    excludedBeDomains: Array.isArray(data.excludedBeDomains) ? data.excludedBeDomains : []
+  };
+}
+
 async function getSyncData() {
-  if (api.storage?.sync) {
-    try {
-      const data = await api.storage.sync.get(["enabled", "targetLanguage", "customDomains", "excludedBeDomains"]);
-      return {
-        enabled: data.enabled !== undefined ? data.enabled : true,
-        targetLanguage: data.targetLanguage === "nl" ? "nl" : "fr",
-        customDomains: Array.isArray(data.customDomains) ? data.customDomains : [],
-        excludedBeDomains: Array.isArray(data.excludedBeDomains) ? data.excludedBeDomains : []
-      };
-    } catch (err) {
-      console.warn("[BE Locale Switcher] storage.sync.get error:", err);
-    }
+  if (cachedSyncData) {
+    return {
+      ...cachedSyncData,
+      customDomains: [...cachedSyncData.customDomains],
+      excludedBeDomains: [...cachedSyncData.excludedBeDomains]
+    };
   }
-  return { ...memorySyncStore };
+
+  if (api.storage?.sync) {
+    if (!syncLoadPromise) {
+      syncLoadPromise = api.storage.sync
+        .get(["enabled", "targetLanguage", "customDomains", "excludedBeDomains"])
+        .then((data) => {
+          cachedSyncData = normalizeSyncData(data);
+          return cachedSyncData;
+        })
+        .catch((err) => {
+          console.warn("[BE Locale Switcher] storage.sync.get error:", err);
+          return normalizeSyncData(memorySyncStore);
+        })
+        .finally(() => {
+          syncLoadPromise = null;
+        });
+    }
+    const loaded = await syncLoadPromise;
+    return {
+      ...loaded,
+      customDomains: [...loaded.customDomains],
+      excludedBeDomains: [...loaded.excludedBeDomains]
+    };
+  }
+
+  return normalizeSyncData({
+    ...memorySyncStore,
+    customDomains: [...memorySyncStore.customDomains],
+    excludedBeDomains: [...memorySyncStore.excludedBeDomains]
+  });
 }
 
 async function setSyncData(updates) {
-  memorySyncStore = { ...memorySyncStore, ...updates };
+  memorySyncStore = normalizeSyncData({ ...memorySyncStore, ...updates });
+  if (cachedSyncData) {
+    cachedSyncData = normalizeSyncData({ ...cachedSyncData, ...updates });
+  }
   if (api.storage?.sync) {
     try {
       await api.storage.sync.set(updates);
@@ -338,6 +451,30 @@ async function setSyncData(updates) {
 // DeclarativeNetRequest Rule Synchronization
 // =============================================================================
 
+function sanitizeDomainList(domains = []) {
+  const unique = new Set();
+  for (const entry of domains) {
+    const normalized = normalizeDomain(entry);
+    if (normalized) {
+      unique.add(normalized);
+    }
+  }
+  return Array.from(unique).slice(0, MAX_DNR_DOMAINS);
+}
+
+function createModifyHeadersAction(targetHeader) {
+  return {
+    type: "modifyHeaders",
+    requestHeaders: [
+      {
+        header: "accept-language",
+        operation: "set",
+        value: targetHeader
+      }
+    ]
+  };
+}
+
 function buildDnrRules(syncData) {
   const { enabled, targetLanguage, customDomains, excludedBeDomains } = syncData;
   if (!enabled) return [];
@@ -349,44 +486,28 @@ function buildDnrRules(syncData) {
   const beRule = {
     id: RULE_ID_BE_DOMAINS,
     priority: 1,
-    action: {
-      type: "modifyHeaders",
-      requestHeaders: [
-        {
-          header: "accept-language",
-          operation: "set",
-          value: targetHeader
-        }
-      ]
-    },
+    action: createModifyHeadersAction(targetHeader),
     condition: {
       regexFilter: "^https?://[^/:]+\\.be(:[0-9]+)?/",
       resourceTypes: ["main_frame", "sub_frame", "xmlhttprequest"]
     }
   };
 
-  if (excludedBeDomains && excludedBeDomains.length > 0) {
-    beRule.condition.excludedDomains = excludedBeDomains.slice(0, 100);
+  const cleanExcluded = sanitizeDomainList(excludedBeDomains);
+  if (cleanExcluded.length > 0) {
+    beRule.condition.excludedRequestDomains = cleanExcluded;
   }
   rules.push(beRule);
 
   // Rule 2: Custom domains whitelist where locale should be injected
-  if (customDomains && customDomains.length > 0) {
+  const cleanCustom = sanitizeDomainList(customDomains);
+  if (cleanCustom.length > 0) {
     rules.push({
       id: RULE_ID_CUSTOM_DOMAINS,
       priority: 1,
-      action: {
-        type: "modifyHeaders",
-        requestHeaders: [
-          {
-            header: "accept-language",
-            operation: "set",
-            value: targetHeader
-          }
-        ]
-      },
+      action: createModifyHeadersAction(targetHeader),
       condition: {
-        domains: customDomains.slice(0, 100),
+        requestDomains: cleanCustom,
         resourceTypes: ["main_frame", "sub_frame", "xmlhttprequest"]
       }
     });
@@ -395,22 +516,45 @@ function buildDnrRules(syncData) {
   return rules;
 }
 
+let dnrSyncPromise = null;
+let dnrSyncPending = false;
+let lastAppliedRulesJson = null;
+
 async function syncDnrRules() {
   if (!api.declarativeNetRequest?.updateDynamicRules) {
     return;
   }
 
-  try {
-    const syncData = await getSyncData();
-    const rulesToAdd = buildDnrRules(syncData);
-
-    await api.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: [RULE_ID_BE_DOMAINS, RULE_ID_CUSTOM_DOMAINS],
-      addRules: rulesToAdd
-    });
-  } catch (err) {
-    console.error("[BE Locale Switcher] Failed to update DNR rules:", err);
+  if (dnrSyncPromise) {
+    dnrSyncPending = true;
+    return dnrSyncPromise;
   }
+
+  dnrSyncPromise = (async () => {
+    do {
+      dnrSyncPending = false;
+      try {
+        const syncData = await getSyncData();
+        const rulesToAdd = buildDnrRules(syncData);
+        const rulesJson = JSON.stringify(rulesToAdd);
+        if (rulesJson === lastAppliedRulesJson) {
+          continue;
+        }
+
+        await api.declarativeNetRequest.updateDynamicRules({
+          removeRuleIds: [RULE_ID_BE_DOMAINS, RULE_ID_CUSTOM_DOMAINS],
+          addRules: rulesToAdd
+        });
+        lastAppliedRulesJson = rulesJson;
+      } catch (err) {
+        console.error("[BE Locale Switcher] Failed to update DNR rules:", err);
+      }
+    } while (dnrSyncPending);
+  })().finally(() => {
+    dnrSyncPromise = null;
+  });
+
+  return dnrSyncPromise;
 }
 
 // =============================================================================
@@ -511,19 +655,24 @@ async function getStatusForUrl(url) {
 if (api.tabs?.onUpdated) {
   api.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     const tabUrl = changeInfo.url || tab?.url;
-    if (tabUrl) {
+    if (!tabUrl) return;
+
+    if (changeInfo.url || changeInfo.status === "loading" || changeInfo.status === "complete") {
       refreshTabBadge(tabId, tabUrl);
-      if (changeInfo.url) {
-        handleUrlNavigationFallback(tabId, changeInfo.url);
-      }
+    }
+    if (changeInfo.url) {
+      handleUrlNavigationFallback(tabId, changeInfo.url);
     }
   });
 }
 
 // Clean up tab history when tab is closed
 if (api.tabs?.onRemoved) {
-  api.tabs.onRemoved.addListener((tabId) => {
-    tabRedirectHistory.delete(tabId);
+  api.tabs.onRemoved.addListener(async (tabId) => {
+    await ensureSessionLoaded();
+    if (tabRedirectHistory.delete(tabId)) {
+      await persistSessionState();
+    }
   });
 }
 
@@ -537,6 +686,19 @@ if (api.tabs?.onActivated) {
       }
     } catch {}
   });
+}
+
+function toggleDomainInList(existingList, domain, maxLimit) {
+  const isPresent = existingList.some((d) => d === domain || normalizeDomain(d) === domain);
+  if (isPresent) {
+    return {
+      list: existingList.filter((d) => d !== domain && normalizeDomain(d) !== domain)
+    };
+  }
+  if (existingList.length >= maxLimit) {
+    return { error: `Maximum of ${maxLimit} domains reached` };
+  }
+  return { list: [...existingList, domain] };
 }
 
 // Message listener for popup interactions
@@ -567,28 +729,21 @@ if (api.runtime?.onMessage) {
     if (message.type === "TOGGLE_CURRENT_SITE") {
       getSyncData().then(async (data) => {
         const domain = normalizeDomain(message.domain);
-        if (!domain) return;
-
-        if (isBeDomain(domain)) {
-          let list = [...data.excludedBeDomains];
-          if (list.includes(domain)) {
-            list = list.filter((d) => d !== domain);
-          } else {
-            list.push(domain);
-          }
-          await setSyncData({ excludedBeDomains: list });
-        } else {
-          let list = [...data.customDomains];
-          if (list.includes(domain)) {
-            list = list.filter((d) => d !== domain);
-          } else {
-            list.push(domain);
-          }
-          await setSyncData({ customDomains: list });
+        if (!domain) {
+          sendResponse?.({ status: "error", message: "Invalid domain" });
+          return;
         }
 
+        const field = isBeDomain(domain) ? "excludedBeDomains" : "customDomains";
+        const result = toggleDomainInList(data[field], domain, MAX_DNR_DOMAINS);
+        if (result.error) {
+          sendResponse?.({ status: "error", message: result.error });
+          return;
+        }
+
+        await setSyncData({ [field]: result.list });
         await syncDnrRules();
-        sendResponse?.({ status: "ok" });
+        sendResponse?.({ status: "ok", domain });
       });
       return true;
     }
@@ -597,21 +752,34 @@ if (api.runtime?.onMessage) {
       getSyncData().then(async (data) => {
         const domain = normalizeDomain(message.domain);
         if (!domain) {
-          sendResponse?.({ status: "error", message: "Invalid domain" });
+          sendResponse?.({ status: "error", message: "Enter a valid domain (e.g. aliexpress.com)" });
           return;
         }
-        const list = Array.from(new Set([...data.customDomains, domain]));
+        if (isBeDomain(domain)) {
+          sendResponse?.({ status: "error", message: ".be domains are already injected by default" });
+          return;
+        }
+        if (data.customDomains.some((d) => d === domain || normalizeDomain(d) === domain)) {
+          sendResponse?.({ status: "ok", domain });
+          return;
+        }
+        if (data.customDomains.length >= MAX_DNR_DOMAINS) {
+          sendResponse?.({ status: "error", message: `Maximum of ${MAX_DNR_DOMAINS} custom domains reached` });
+          return;
+        }
+        const list = [...data.customDomains, domain];
         await setSyncData({ customDomains: list });
         await syncDnrRules();
-        sendResponse?.({ status: "ok" });
+        sendResponse?.({ status: "ok", domain });
       });
       return true;
     }
 
     if (message.type === "REMOVE_CUSTOM_DOMAIN") {
       getSyncData().then(async (data) => {
+        const raw = typeof message.domain === "string" ? message.domain.trim().toLowerCase() : "";
         const domain = normalizeDomain(message.domain);
-        const list = data.customDomains.filter((d) => d !== domain);
+        const list = data.customDomains.filter((d) => d !== raw && (!domain || normalizeDomain(d) !== domain));
         await setSyncData({ customDomains: list });
         await syncDnrRules();
         sendResponse?.({ status: "ok" });
@@ -621,12 +789,20 @@ if (api.runtime?.onMessage) {
   });
 }
 
-// Storage change listener to keep DNR rules in sync
+// Storage change listener to keep cache and DNR rules in sync
 if (api.storage?.onChanged) {
   api.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === "sync") {
-      syncDnrRules();
+    if (areaName !== "sync") return;
+    if (cachedSyncData) {
+      const updated = { ...cachedSyncData };
+      for (const [key, change] of Object.entries(changes)) {
+        if (change) {
+          updated[key] = change.newValue;
+        }
+      }
+      cachedSyncData = normalizeSyncData(updated);
     }
+    syncDnrRules();
   });
 }
 
@@ -660,10 +836,12 @@ if (typeof module !== "undefined" && module.exports) {
     getSyncData,
     setSyncData,
     getStatusForUrl,
+    ensureSessionLoaded,
     FRENCH_ACCEPT_LANGUAGE,
     DUTCH_ACCEPT_LANGUAGE,
     RULE_ID_BE_DOMAINS,
     RULE_ID_CUSTOM_DOMAINS,
+    MAX_DNR_DOMAINS,
     tabRedirectHistory,
     sessionBypassedHosts
   };
