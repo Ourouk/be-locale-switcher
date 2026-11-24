@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>No Dutch Please</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <img src="../icons/icon-32.png" alt="No Dutch Please" class="brand-icon">
+        <div class="brand-text">
+          <h1 class="brand-title">No Dutch Please</h1>
+          <span class="brand-subtitle">Belgian French Enforcer</span>
+        </div>
+      </div>
+      <!-- Global Toggle Switch -->
+      <label class="switch" title="Toggle extension on or off">
+        <input type="checkbox" id="global-toggle" checked>
+        <span class="slider"></span>
+      </label>
+    </header>
+
+    <!-- Firefox Host Permission Banner (hidden by default) -->
+    <div id="permission-banner" class="banner banner-warning hidden">
+      <div class="banner-content">
+        <span class="banner-title">Permission required</span>
+        <span class="banner-desc">Firefox needs permission to modify headers on Belgian (.be) sites.</span>
+      </div>
+      <button id="grant-permission-btn" class="btn btn-sm btn-accent">Grant</button>
+    </div>
+
+    <!-- Active Site Card -->
+    <section class="card site-card">
+      <div class="site-header">
+        <span class="site-label">Active Site</span>
+        <span id="site-domain" class="site-domain">Loading...</span>
+      </div>
+
+      <div class="status-indicator">
+        <div id="status-dot" class="status-dot dot-idle"></div>
+        <div class="status-details">
+          <span id="status-title" class="status-title">Checking site...</span>
+          <span id="status-desc" class="status-desc">Analyzing locale settings</span>
+        </div>
+      </div>
+
+      <!-- Action Buttons for Current Site -->
+      <div class="site-actions">
+        <button id="whitelist-toggle-btn" class="btn btn-secondary" disabled>
+          <span id="whitelist-btn-icon" class="btn-icon">🚫</span>
+          <span id="whitelist-btn-text">Ignore this site</span>
+        </button>
+
+        <button id="reset-bypass-btn" class="btn btn-outline hidden">
+          <span class="btn-icon">↺</span>
+          <span>Reset Session Bypass</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Whitelist Management Accordion -->
+    <section class="whitelist-section">
+      <button id="whitelist-accordion-btn" class="accordion-header">
+        <span id="whitelist-count-label">Ignored Sites (0)</span>
+        <span id="accordion-arrow" class="accordion-arrow">▾</span>
+      </button>
+
+      <div id="whitelist-accordion-content" class="accordion-content hidden">
+        <ul id="whitelist-items" class="whitelist-items">
+          <li class="whitelist-empty">No sites currently ignored.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span class="footer-badge">fr-FR &bull; .BE</span>
+      <span class="footer-privacy">Zero-bloat &bull; Privacy-friendly</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
