@@ -205,6 +205,13 @@ it("simulates loop guard redirect detection within 5000ms window", () => {
 
 // 7. Manifest Validation
 console.log("\n▶ 7. Manifest Validation");
+it("validates manifest.json supports Firefox (has background.scripts)", () => {
+  const content = JSON.parse(fs.readFileSync(path.join(__dirname, "../manifest.json"), "utf8"));
+  assert.strictEqual(content.manifest_version, 3);
+  assert.strictEqual(Array.isArray(content.background.scripts), true);
+  assert.strictEqual(content.background.scripts.includes("background.js"), true);
+});
+
 it("validates manifest.chrome.json syntax and MV3 service worker", () => {
   const content = JSON.parse(fs.readFileSync(path.join(__dirname, "../manifest.chrome.json"), "utf8"));
   assert.strictEqual(content.manifest_version, 3);

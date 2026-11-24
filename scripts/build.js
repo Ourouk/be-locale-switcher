@@ -21,6 +21,9 @@ function getActiveBrowser() {
   if (!fs.existsSync(ACTIVE_MANIFEST)) return 'none';
   try {
     const content = JSON.parse(fs.readFileSync(ACTIVE_MANIFEST, 'utf8'));
+    if (content.background?.scripts && content.background?.service_worker) {
+      return 'universal (chrome + firefox)';
+    }
     if (content.browser_specific_settings?.gecko) {
       return 'firefox';
     }
@@ -39,9 +42,14 @@ function activate(browser) {
     console.log('✓ Switched manifest.json to Chromium (Chrome, Brave, Edge)');
   } else if (browser === 'firefox' || browser === 'gecko') {
     fs.copyFileSync(FIREFOX_MANIFEST, ACTIVE_MANIFEST);
-    console.log('✓ Switched manifest.json to Mozilla Firefox (Gecko MV3)');
+    console.log('✓ Switched manifest.json to Mozilla Firefox (Gecko MV3 with background.scripts)');
+  } else if (browser === 'universal' || browser === 'all' || browser === 'shared') {
+    const base = JSON.parse(fs.readFileSync(FIREFOX_MANIFEST, 'utf8'));
+    base.background.service_worker = "background.js";
+    fs.writeFileSync(ACTIVE_MANIFEST, JSON.stringify(base, null, 2) + '\n');
+    console.log('✓ Switched manifest.json to Universal (Both background.scripts & service_worker)');
   } else {
-    console.error(`Unknown target: "${browser}". Use "chrome", "firefox", "package", or "status".`);
+    console.error(`Unknown target: "${browser}". Use "chrome", "firefox", "universal", "package", or "status".`);
     process.exit(1);
   }
 }
@@ -95,8 +103,8 @@ function packageExtensions() {
   createZipArchive(firefoxZip, filesToInclude);
   console.log(`✓ Packaged Firefox extension: dist/${path.basename(firefoxZip)}`);
 
-  // Reset back to chrome
-  activate('chrome');
+  // Reset to universal by default so both work immediately out of the box
+  activate('universal');
 }
 
 switch (target) {
@@ -110,6 +118,12 @@ switch (target) {
     activate('firefox');
     break;
 
+  case 'universal':
+  case 'all':
+  case 'shared':
+    activate('universal');
+    break;
+
   case 'package':
   case 'dist':
     packageExtensions();
@@ -119,8 +133,9 @@ switch (target) {
   default:
     console.log(`Active manifest target: [${getActiveBrowser().toUpperCase()}]`);
     console.log('Usage:');
-    console.log('  node scripts/build.js chrome   -> Activate Chromium manifest');
-    console.log('  node scripts/build.js firefox  -> Activate Firefox manifest');
-    console.log('  node scripts/build.js package  -> Create .zip distribution builds');
+    console.log('  node scripts/build.js universal -> Universal manifest (loads directly in both browsers)');
+    console.log('  node scripts/build.js firefox   -> Mozilla Firefox dedicated manifest');
+    console.log('  node scripts/build.js chrome    -> Chromium dedicated manifest');
+    console.log('  node scripts/build.js package   -> Create .zip distribution builds');
     break;
 }

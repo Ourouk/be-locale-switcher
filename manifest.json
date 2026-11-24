@@ -13,7 +13,14 @@
     "*://*.be/*"
   ],
   "background": {
+    "scripts": ["background.js"],
     "service_worker": "background.js"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "no-dutch-please@extension",
+      "strict_min_version": "115.0"
+    }
   },
   "action": {
     "default_popup": "popup/popup.html",
