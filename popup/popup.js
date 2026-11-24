@@ -1,12 +1,17 @@
 /**
  * No Dutch Please - Popup Controller
  * Lightweight, privacy-friendly Manifest V3 popup script.
+ * Supports bi-directional locale switching (French first vs Dutch first).
  */
 
 const api = globalThis.browser ?? globalThis.chrome;
 
 // DOM Elements
 const globalToggle = document.getElementById("global-toggle");
+const brandSubtitle = document.getElementById("brand-subtitle");
+const langBtnFr = document.getElementById("lang-btn-fr");
+const langBtnNl = document.getElementById("lang-btn-nl");
+const footerBadge = document.getElementById("footer-badge");
 const siteDomainEl = document.getElementById("site-domain");
 const statusDot = document.getElementById("status-dot");
 const statusTitle = document.getElementById("status-title");
@@ -74,7 +79,6 @@ async function refreshUI() {
   const url = currentTab?.url || "";
 
   try {
-    // Send query to background script
     const res = await api.runtime.sendMessage({
       type: "GET_STATUS",
       url
@@ -91,11 +95,25 @@ async function refreshUI() {
 }
 
 /**
- * Renders the active site status.
+ * Renders the active site status and language direction.
  */
 function renderStatus(status) {
   // Global Toggle
   globalToggle.checked = status.enabled;
+
+  // Language Direction Selector
+  const targetLang = status.targetLanguage === "nl" ? "nl" : "fr";
+  if (targetLang === "nl") {
+    langBtnNl.classList.add("active");
+    langBtnFr.classList.remove("active");
+    brandSubtitle.textContent = "Belgian Dutch Enforcer (FR → NL)";
+    footerBadge.textContent = "nl-BE • .BE";
+  } else {
+    langBtnFr.classList.add("active");
+    langBtnNl.classList.remove("active");
+    brandSubtitle.textContent = "Belgian French Enforcer (NL → FR)";
+    footerBadge.textContent = "fr-FR • .BE";
+  }
 
   // Domain text
   if (status.hostname) {
@@ -115,16 +133,16 @@ function renderStatus(status) {
     statusTitle.textContent = "Extension Disabled";
     statusDesc.textContent = "Websites will use default browser locale";
     resetBypassBtn.classList.add("hidden");
-    updateWhitelistButton(status.isWhitelisted);
+    updateWhitelistButton(status.isWhitelisted, targetLang);
     return;
   }
 
   if (status.isWhitelisted) {
     statusDot.classList.add("dot-warning");
     statusTitle.textContent = "Whitelisted by User";
-    statusDesc.textContent = "Header and URL rewrites are paused on this site";
+    statusDesc.textContent = "Locale enforcement is paused on this site";
     resetBypassBtn.classList.add("hidden");
-    updateWhitelistButton(true);
+    updateWhitelistButton(true, targetLang);
     return;
   }
 
@@ -133,32 +151,35 @@ function renderStatus(status) {
     statusTitle.textContent = "Temporarily Bypassed";
     statusDesc.textContent = "Redirect loop or 404 detected; bypassed for this session";
     resetBypassBtn.classList.remove("hidden");
-    updateWhitelistButton(false);
+    updateWhitelistButton(false, targetLang);
     return;
   }
 
   resetBypassBtn.classList.add("hidden");
 
+  const langLabel = targetLang === "nl" ? "Dutch (nl-BE)" : "French (fr-FR)";
+
   if (status.isBe) {
     statusDot.classList.add("dot-active");
-    statusTitle.textContent = "Forcing French (fr-FR)";
-    statusDesc.textContent = "Headers set to fr-FR,fr; Dutch URLs redirect to French";
-    updateWhitelistButton(false);
+    statusTitle.textContent = `Forcing ${langLabel}`;
+    statusDesc.textContent = `Headers set to ${targetLang}; Dutch/French URLs rewrite to ${targetLang}`;
+    updateWhitelistButton(false, targetLang);
   } else {
     statusDot.classList.add("dot-idle");
-    statusTitle.textContent = "Not a Belgian (.be) Site";
-    statusDesc.textContent = "Extension is idle for non-Belgian domains";
-    updateWhitelistButton(false);
+    statusTitle.textContent = status.statusText || "Non-Belgian domain (Inactive)";
+    statusDesc.textContent = "Extension is active on .be and commercial .com domains";
+    updateWhitelistButton(false, targetLang);
   }
 }
 
 /**
  * Updates the Whitelist Toggle button label and icon.
  */
-function updateWhitelistButton(isWhitelisted) {
+function updateWhitelistButton(isWhitelisted, targetLang = "fr") {
+  const langName = targetLang === "nl" ? "Dutch" : "French";
   if (isWhitelisted) {
     whitelistBtnIcon.textContent = "✓";
-    whitelistBtnText.textContent = "Resume French for this site";
+    whitelistBtnText.textContent = `Resume ${langName} for this site`;
     whitelistToggleBtn.classList.remove("btn-secondary");
     whitelistToggleBtn.classList.add("btn-accent");
   } else {
@@ -245,12 +266,29 @@ async function toggleCurrentSiteWhitelist() {
     await api.runtime.sendMessage({ type: "SYNC_RULES" });
     await refreshUI();
 
-    // Optionally reload active tab so changes take effect immediately
     if (currentTab?.id) {
       api.tabs.reload(currentTab.id);
     }
   } catch (err) {
     console.error("Failed to toggle whitelist:", err);
+  }
+}
+
+/**
+ * Sets the active target language preference ("fr" or "nl").
+ */
+async function setTargetLanguage(language) {
+  try {
+    await api.runtime.sendMessage({
+      type: "SET_TARGET_LANGUAGE",
+      language
+    });
+    await refreshUI();
+    if (currentTab?.id) {
+      api.tabs.reload(currentTab.id);
+    }
+  } catch (err) {
+    console.error("Failed to set target language:", err);
   }
 }
 
@@ -265,6 +303,10 @@ function setupEventListeners() {
     await api.runtime.sendMessage({ type: "SYNC_RULES" });
     await refreshUI();
   });
+
+  // Language Direction Buttons
+  langBtnFr.addEventListener("click", () => setTargetLanguage("fr"));
+  langBtnNl.addEventListener("click", () => setTargetLanguage("nl"));
 
   // Whitelist Toggle
   whitelistToggleBtn.addEventListener("click", toggleCurrentSiteWhitelist);

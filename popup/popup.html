@@ -14,7 +14,7 @@
         <img src="../icons/icon-32.png" alt="No Dutch Please" class="brand-icon">
         <div class="brand-text">
           <h1 class="brand-title">No Dutch Please</h1>
-          <span class="brand-subtitle">Belgian French Enforcer</span>
+          <span id="brand-subtitle" class="brand-subtitle">Belgian Locale Enforcer</span>
         </div>
       </div>
       <!-- Global Toggle Switch -->
@@ -23,6 +23,19 @@
         <span class="slider"></span>
       </label>
     </header>
+
+    <!-- Language Direction Selector -->
+    <div class="lang-selector-card">
+      <span class="lang-selector-label">Language Preference</span>
+      <div class="segmented-control" role="group" aria-label="Target language preference">
+        <button id="lang-btn-fr" class="segmented-btn active" data-lang="fr" type="button">
+          <span class="flag-icon">🇫🇷</span> French First
+        </button>
+        <button id="lang-btn-nl" class="segmented-btn" data-lang="nl" type="button">
+          <span class="flag-icon">🇳🇱</span> Dutch First
+        </button>
+      </div>
+    </div>
 
     <!-- Firefox Host Permission Banner (hidden by default) -->
     <div id="permission-banner" class="banner banner-warning hidden">
@@ -78,7 +91,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span class="footer-badge">fr-FR &bull; .BE</span>
+      <span id="footer-badge" class="footer-badge">fr-FR &bull; .BE</span>
       <span class="footer-privacy">Zero-bloat &bull; Privacy-friendly</span>
     </footer>
   </div>

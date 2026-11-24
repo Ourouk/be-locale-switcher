@@ -1,6 +1,6 @@
 /**
  * No Dutch Please - Comprehensive Test Suite
- * Tests URL rewriting, domain extraction, exclusion rules, loop guard logic, and manifest structures.
+ * Tests URL rewriting, domain extraction, exclusion rules, loop guard logic, bi-directional mode, and manifest structures.
  */
 
 const assert = require("assert");
@@ -11,11 +11,14 @@ const background = require("../background.js");
 const {
   rewriteUrl,
   isDutchUrl,
+  isSourceLangUrl,
+  getLanguagePair,
   getPrimaryDomain,
   isDomainExcluded,
   applyCase,
   rewriteLocaleString,
   FRENCH_ACCEPT_LANGUAGE,
+  DUTCH_ACCEPT_LANGUAGE,
   REDIRECT_LOOP_WINDOW_MS
 } = background;
 
@@ -278,8 +281,52 @@ it("preserves untouched query parameters byte-for-byte", () => {
   );
 });
 
-// 8. Manifest Validation
-console.log("\n▶ 8. Manifest Validation");
+// 8. Bi-directional Language Logic (Flemish / Dutch-first mode)
+console.log("\n▶ 8. Bi-directional Language Logic (Flemish / Dutch-first mode)");
+it("resolves language pairs correctly in both directions", () => {
+  assert.deepStrictEqual(getLanguagePair("fr"), { source: "nl", target: "fr" });
+  assert.deepStrictEqual(getLanguagePair("nl"), { source: "fr", target: "nl" });
+});
+
+it("rewrites French to Dutch when target is 'nl' (FR -> NL)", () => {
+  // Subdomains
+  assert.strictEqual(rewriteUrl("https://fr.example.be/", "nl"), "https://nl.example.be/");
+  assert.strictEqual(rewriteUrl("https://fr.aliexpress.com/", "nl"), "https://nl.aliexpress.com/");
+  assert.strictEqual(rewriteUrl("https://fr-be.example.be/", "nl"), "https://nl-be.example.be/");
+
+  // Path segments
+  assert.strictEqual(rewriteUrl("https://example.be/fr/", "nl"), "https://example.be/nl/");
+  assert.strictEqual(rewriteUrl("https://example.be/fr", "nl"), "https://example.be/nl");
+  assert.strictEqual(rewriteUrl("https://example.be/FR/", "nl"), "https://example.be/NL/");
+  assert.strictEqual(rewriteUrl("https://www.apple.com/be-fr/shop", "nl"), "https://www.apple.com/be-nl/shop");
+  assert.strictEqual(rewriteUrl("https://www.ikea.com/be/fr/cat/chairs", "nl"), "https://www.ikea.com/be/nl/cat/chairs");
+  assert.strictEqual(rewriteUrl("https://example.com/fr-be/page", "nl"), "https://example.com/nl-be/page");
+
+  // Query parameters
+  assert.strictEqual(rewriteUrl("https://example.be/?lang=fr", "nl"), "https://example.be/?lang=nl");
+  assert.strictEqual(rewriteUrl("https://example.be/?locale=fr_BE", "nl"), "https://example.be/?locale=nl_BE");
+  assert.strictEqual(rewriteUrl("https://example.com/?lang=be-fr", "nl"), "https://example.com/?lang=be-nl");
+});
+
+it("protects domestic French (.fr) sites when in Dutch-first mode", () => {
+  assert.strictEqual(rewriteUrl("https://lemonde.fr/", "nl"), null);
+  assert.strictEqual(rewriteUrl("https://fr.lemonde.fr/", "nl"), null);
+});
+
+it("identifies source language correctly in Dutch-first mode", () => {
+  assert.strictEqual(isSourceLangUrl("https://example.be/fr/", "nl"), true);
+  assert.strictEqual(isSourceLangUrl("https://fr.example.be/", "nl"), true);
+  assert.strictEqual(isSourceLangUrl("https://example.be/nl/", "nl"), false);
+  assert.strictEqual(isSourceLangUrl("https://lemonde.fr/", "nl"), false);
+});
+
+it("defines distinct Accept-Language headers for both modes", () => {
+  assert.strictEqual(FRENCH_ACCEPT_LANGUAGE.startsWith("fr-FR"), true);
+  assert.strictEqual(DUTCH_ACCEPT_LANGUAGE.startsWith("nl-BE"), true);
+});
+
+// 9. Manifest Validation
+console.log("\n▶ 9. Manifest Validation");
 it("validates manifest.json supports Firefox (has background.scripts)", () => {
   const content = JSON.parse(fs.readFileSync(path.join(__dirname, "../manifest.json"), "utf8"));
   assert.strictEqual(content.manifest_version, 3);

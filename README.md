@@ -1,18 +1,21 @@
-# No Dutch Please 🇧🇪 🇫🇷
+# No Dutch Please 🇧🇪 🇫🇷 🇳🇱
 
-> **Zero-bloat, privacy-friendly Manifest V3 cross-browser extension for Chromium (Chrome, Brave, Edge) and Firefox that automatically defaults Belgian websites to French while keeping the rest of the web in your preferred browser language (e.g. English).**
+> **Zero-bloat, privacy-friendly Manifest V3 cross-browser extension for Chromium (Chrome, Brave, Edge) and Firefox that automatically defaults Belgian websites to your preferred national language (French or Dutch) while keeping the rest of the web in your preferred browser language (e.g. English).**
 
 ---
 
 ## The Problem
 
-When your browser language is set to English, visiting Belgian (`.be`) websites frequently defaults to Dutch (`nl`) because English versions are rarely provided, and servers fall back to the first national language alphabetically or geographically. 
+When your browser language is set to English, visiting Belgian (`.be`) and commercial international websites frequently defaults to the wrong national language because English versions are rarely provided, and servers fall back automatically:
+- **For Francophones / Walloons:** English browsers constantly default to Dutch (`nl`).
+- **For Flemings:** English browsers or certain services default to French (`fr`).
 
-**No Dutch Please** solves this seamlessly by:
-1. Setting the `Accept-Language` HTTP header on `.be` requests to French (`fr-FR`) using native, zero-CPU `declarativeNetRequest`.
-2. Rewriting Dutch URL patterns (`nl` → `fr`) on subdomains, path segments, and query parameters.
-3. Protecting against infinite redirect loops and 404 errors on Flemish/Dutch-only websites with a session-based loop guard.
-4. Letting the rest of the internet stay in English (or whatever your browser default is).
+**No Dutch Please** solves this seamlessly in both directions:
+1. **Dynamic Locale Forcing:** Sets the `Accept-Language` HTTP header on `.be` requests to your preferred language (French or Dutch) using native, zero-CPU `declarativeNetRequest`.
+2. **Smart URL Rewriting:** Bi-directionally rewrites language patterns (`nl` ⟷ `fr`) across subdomains, path segments, and query parameters.
+3. **Infinite Redirect Loop & 404 Guard:** Automatically detects single-language sites (e.g., Dutch-only or French-only regional portals) and temporarily bypasses them if a rewrite fails.
+4. **Domestic Domain Protection:** Never rewrites domestic sites of the source language (e.g., `.nl` domains are never rewritten in French mode, `.fr` domains are never rewritten in Dutch mode).
+5. **No Collateral Damage:** Lets the rest of the internet stay in English (or whatever your browser default is).
 
 ---
 
@@ -38,9 +41,10 @@ When your browser language is set to English, visiting Belgian (`.be`) websites 
   - If a 404 occurs on the French URL within 5 seconds, the extension reverts the tab back to the original Dutch URL and temporarily bypasses the domain for the session.
 
 - **Minimalist Popup UI:**
+  - **Language Preference Selector:** One-click toggle between **French First** (`nl` → `fr`) and **Dutch First** (`fr` → `nl`).
   - **Global Switch:** Instantly enable or disable the extension.
   - **Site Whitelist Button:** One-click "Ignore this site" toggle, saved in `storage.sync` and dynamically updating `declarativeNetRequest` exclusion rules.
-  - **Live Status Indicator:** Real-time feedback (`Forcing French`, `Whitelisted`, `Temporarily Bypassed`, `Inactive`).
+  - **Live Status Indicator:** Real-time feedback (`Forcing French`, `Forcing Dutch`, `Whitelisted`, `Temporarily Bypassed`, `Inactive`).
   - **Ignored Sites List:** View and manage whitelisted domains.
   - **Firefox Permission Helper:** Built-in prompt to grant host permissions in Firefox MV3.
 

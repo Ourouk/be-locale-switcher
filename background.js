@@ -1,7 +1,8 @@
 /**
  * No Dutch Please - Background Script
  * Lightweight, privacy-friendly Manifest V3 extension for Chromium and Firefox.
- * Forces French locale on Belgian (.be) websites and commercial (.com) sites
+ * Bi-directional locale enforcement for Belgian (.be) websites and commercial (.com) sites.
+ * Defaults sites to French (NL -> FR) or Dutch (FR -> NL) based on user preference,
  * while keeping the rest of the web in your preferred browser language.
  */
 
@@ -11,15 +12,24 @@ const api = globalThis.browser ?? globalThis.chrome ?? {};
 // Core Constants
 const RULE_ID_ACCEPT_LANGUAGE = 1;
 const FRENCH_ACCEPT_LANGUAGE = "fr-FR,fr;q=0.9,fr-BE;q=0.8,en;q=0.7";
+const DUTCH_ACCEPT_LANGUAGE = "nl-BE,nl;q=0.9,nl-NL;q=0.8,en;q=0.7";
 const REDIRECT_LOOP_WINDOW_MS = 5000;
 const BE_TWO_LEVEL_TLDS = new Set(["ac.be", "mil.be", "gov.be"]);
 
-// Copies the capitalisation of a 2-letter sample (nl/NL/Nl/nL)
-// onto a 2-letter target (fr/FR/Fr/fR).
-function applyCase(sample, lower) {
-  const upper = lower.toUpperCase();
+// Helper: resolves source & target language pair
+function getLanguagePair(targetLang = "fr") {
+  const target = targetLang === "nl" ? "nl" : "fr";
+  const source = target === "fr" ? "nl" : "fr";
+  return { source, target };
+}
+
+// Copies the capitalisation of a 2-letter sample (e.g. nl/NL/Nl/nL or fr/FR/Fr/fR)
+// onto a 2-letter target.
+function applyCase(sample, target) {
+  const upper = target.toUpperCase();
+  const lower = target.toLowerCase();
   let out = "";
-  for (let i = 0; i < lower.length; i++) {
+  for (let i = 0; i < target.length; i++) {
     out += sample[i] && sample[i] !== sample[i].toLowerCase() ? upper[i] : lower[i];
   }
   return out;
@@ -65,38 +75,43 @@ function isDomainExcluded(hostname, excludedList = []) {
 }
 
 /**
- * Rewrites a locale string from Dutch to French, preserving casing and separators.
+ * Rewrites a locale string bi-directionally, preserving casing and separators.
+ * e.g. when targetLang is "fr": nl -> fr, nl-be -> fr-be, be-nl -> be-fr
+ * e.g. when targetLang is "nl": fr -> nl, fr-be -> nl-be, be-fr -> be-nl
  */
-function rewriteLocaleString(str, isBelgianDomain) {
+function rewriteLocaleString(str, isBelgianDomain, targetLang = "fr") {
   if (!str || typeof str !== "string") return str;
+  const { source, target } = getLanguagePair(targetLang);
 
   // Exact 2-letter language code replacement (only on .be domains)
-  if (isBelgianDomain && str.toLowerCase() === "nl") {
-    return applyCase(str, "fr");
+  if (isBelgianDomain && str.toLowerCase() === source) {
+    return applyCase(str, target);
   }
 
-  // Regional Belgian code replacement: nl-be, be-nl, nl_BE, be_NL (valid on any domain)
-  if (/^nl[-_]be$/i.test(str)) {
+  // Regional Belgian code replacement: {source}-be, be-{source}, {source}_BE, be_{source}
+  const sourceBeRegex = new RegExp(`^${source}[-_]be$`, "i");
+  if (sourceBeRegex.test(str)) {
     const sep = str.includes("-") ? "-" : "_";
     const bePart = str.slice(3); // Preserves casing of "be" / "BE"
-    const frPart = applyCase(str.slice(0, 2), "fr");
-    return `${frPart}${sep}${bePart}`;
+    const targetPart = applyCase(str.slice(0, 2), target);
+    return `${targetPart}${sep}${bePart}`;
   }
 
-  if (/^be[-_]nl$/i.test(str)) {
+  const beSourceRegex = new RegExp(`^be[-_]${source}$`, "i");
+  if (beSourceRegex.test(str)) {
     const sep = str.includes("-") ? "-" : "_";
     const bePart = str.slice(0, 2);
-    const frPart = applyCase(str.slice(3, 5), "fr");
-    return `${bePart}${sep}${frPart}`;
+    const targetPart = applyCase(str.slice(3, 5), target);
+    return `${bePart}${sep}${targetPart}`;
   }
 
   return str;
 }
 
 /**
- * Checks if a given URL matches Dutch patterns.
+ * Checks if a given URL matches source language patterns for the selected direction.
  */
-function isDutchUrl(inputUrl) {
+function isSourceLangUrl(inputUrl, targetLang = "fr") {
   let urlObj;
   try {
     urlObj = new URL(inputUrl);
@@ -104,16 +119,22 @@ function isDutchUrl(inputUrl) {
     return false;
   }
 
+  const { source } = getLanguagePair(targetLang);
   const hostname = urlObj.hostname.toLowerCase();
   const hostParts = hostname.split(".");
   const tld = hostParts[hostParts.length - 1];
   const isBeDomain = tld === "be" || hostname === "be";
   const isCommercialCom = tld === "com";
 
-  // Subdomains: only .be and commercial .com (never generic nl.foo.org, never .nl)
-  if (hostParts.length > 2 && tld !== "nl" && (isBeDomain || isCommercialCom)) {
+  // Prevent matching domestic sites of the source language (e.g. nos.nl or lemonde.fr)
+  if (tld === source) {
+    return false;
+  }
+
+  // Subdomains: only .be and commercial .com
+  if (hostParts.length > 2 && (isBeDomain || isCommercialCom)) {
     const sub = hostParts[0].toLowerCase();
-    if (sub === "nl" || sub === "nl-be" || sub === "nl_be") return true;
+    if (sub === source || sub === `${source}-be` || sub === `${source}_be`) return true;
   }
 
   // Check path segments
@@ -121,16 +142,16 @@ function isDutchUrl(inputUrl) {
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i].toLowerCase();
 
-    // Two-segment Belgian combinations: /be/nl/ or /nl/be/
+    // Two-segment combinations: /be/{source}/ or /{source}/be/
     if (i + 1 < segments.length) {
       const nextSeg = segments[i + 1].toLowerCase();
-      if ((seg === "be" && nextSeg === "nl") || (seg === "nl" && nextSeg === "be")) {
+      if ((seg === "be" && nextSeg === source) || (seg === source && nextSeg === "be")) {
         return true;
       }
     }
 
-    if (/^(nl[-_]be|be[-_]nl)$/i.test(seg)) return true;
-    if (isBeDomain && seg === "nl") return true;
+    if (new RegExp(`^(${source}[-_]be|be[-_]${source})$`, "i").test(seg)) return true;
+    if (isBeDomain && seg === source) return true;
   }
 
   // Check query parameters
@@ -139,20 +160,26 @@ function isDutchUrl(inputUrl) {
   for (const [key, val] of searchParams.entries()) {
     if (langKeyRegex.test(key)) {
       const v = val.toLowerCase();
-      if (v === "nl-be" || v === "nl_be" || v === "be-nl" || v === "be_nl") return true;
-      if (isBeDomain && v === "nl") return true;
+      if (v === `${source}-be` || v === `${source}_be` || v === `be-${source}` || v === `be_${source}`) return true;
+      if (isBeDomain && v === source) return true;
     }
   }
 
   return false;
 }
 
+// Alias for backwards compatibility & tests
+const isDutchUrl = (url) => isSourceLangUrl(url, "fr");
+
 /**
- * Smart URL Rewriter (nl -> fr)
- * Supports Belgian .be domains and commercial .com sites
+ * Bi-directional Smart URL Rewriter
+ * Works both ways:
+ *  - When targetLang is "fr": rewrites Dutch (nl) to French (fr)
+ *  - When targetLang is "nl": rewrites French (fr) to Dutch (nl)
+ * Supports Belgian .be domains and commercial .com sites.
  * Returns rewritten URL string if changes were made, or null if untouched.
  */
-function rewriteUrl(inputUrl) {
+function rewriteUrl(inputUrl, targetLang = "fr") {
   let urlObj;
   try {
     urlObj = new URL(inputUrl);
@@ -164,28 +191,34 @@ function rewriteUrl(inputUrl) {
     return null;
   }
 
+  const { source, target } = getLanguagePair(targetLang);
   const hostname = urlObj.hostname.toLowerCase();
   const hostParts = hostname.split(".");
   const tld = hostParts[hostParts.length - 1];
   const isBeDomain = tld === "be" || hostname === "be";
   const isCommercialCom = tld === "com";
 
+  // Prevent rewriting domestic sites of the source language
+  // (e.g. don't rewrite genuine .nl sites when source is nl, or genuine .fr sites when source is fr)
+  if (tld === source) {
+    return null;
+  }
+
   let changed = false;
 
   // 1. Subdomain rewriting:
-  // Rewrites "nl." to "fr." only on .be and commercial .com domains
-  // Never touches genuine Netherlands websites ending in .nl (e.g. nos.nl, nl.example.nl)
-  if (hostParts.length > 2 && tld !== "nl" && (isBeDomain || isCommercialCom)) {
+  // Rewrites bare source subdomain (nl. -> fr. or fr. -> nl.) on .be domains and commercial .com domains
+  if (hostParts.length > 2 && (isBeDomain || isCommercialCom)) {
     const sub = hostParts[0];
     const subLower = sub.toLowerCase();
 
-    if (subLower === "nl") {
-      hostParts[0] = "fr";
+    if (subLower === source) {
+      hostParts[0] = applyCase(sub, target);
       urlObj.hostname = hostParts.join(".");
       changed = true;
-    } else if (subLower === "nl-be" || subLower === "nl_be") {
+    } else if (subLower === `${source}-be` || subLower === `${source}_be`) {
       const sep = sub.includes("-") ? "-" : "_";
-      hostParts[0] = "fr" + sep + sub.slice(3);
+      hostParts[0] = applyCase(sub.slice(0, 2), target) + sep + sub.slice(3);
       urlObj.hostname = hostParts.join(".");
       changed = true;
     }
@@ -199,23 +232,23 @@ function rewriteUrl(inputUrl) {
     const seg = segments[i];
     const segLower = seg.toLowerCase();
 
-    // Two-segment Belgian combinations: /be/nl/ -> /be/fr/, /nl/be/ -> /fr/be/
+    // Two-segment combinations: /be/{source}/ -> /be/{target}/, /{source}/be/ -> /{target}/be/
     if (i + 1 < segments.length) {
       const nextSeg = segments[i + 1];
       const nextLower = nextSeg.toLowerCase();
 
-      if (segLower === "be" && nextLower === "nl") {
-        segments[i + 1] = applyCase(nextSeg, "fr");
+      if (segLower === "be" && nextLower === source) {
+        segments[i + 1] = applyCase(nextSeg, target);
         pathChanged = true;
       }
-      if (segLower === "nl" && nextLower === "be") {
-        segments[i] = applyCase(seg, "fr");
+      if (segLower === source && nextLower === "be") {
+        segments[i] = applyCase(seg, target);
         pathChanged = true;
       }
     }
 
-    // Single-segment replacement: /nl/ on .be, or /nl-be/, /be-nl/ on any domain
-    const rewritten = rewriteLocaleString(seg, isBeDomain);
+    // Single-segment replacement: /{source}/ on .be, or /{source}-be/, /be-{source}/ on any domain
+    const rewritten = rewriteLocaleString(seg, isBeDomain, targetLang);
     if (rewritten !== seg) {
       segments[i] = rewritten;
       pathChanged = true;
@@ -249,7 +282,7 @@ function rewriteUrl(inputUrl) {
       } catch {
         return pair;
       }
-      const rewritten = rewriteLocaleString(val, isBeDomain);
+      const rewritten = rewriteLocaleString(val, isBeDomain, targetLang);
       if (rewritten === val) return pair;
       queryChanged = true;
       return `${rawKey}=${encodeURIComponent(rewritten)}`;
@@ -270,14 +303,15 @@ function rewriteUrl(inputUrl) {
 
 async function getSyncData() {
   try {
-    const data = await api.storage.sync.get(["enabled", "whitelist"]);
+    const data = await api.storage.sync.get(["enabled", "whitelist", "targetLanguage"]);
     return {
       enabled: data.enabled ?? true,
+      targetLanguage: data.targetLanguage === "nl" ? "nl" : "fr",
       whitelist: Array.isArray(data.whitelist) ? data.whitelist : []
     };
   } catch (err) {
     console.error("[No Dutch Please] storage.sync.get error:", err);
-    return { enabled: true, whitelist: [] };
+    return { enabled: true, targetLanguage: "fr", whitelist: [] };
   }
 }
 
@@ -393,13 +427,13 @@ async function resetSessionBypass(domain) {
 
 /**
  * Synchronizes declarativeNetRequest dynamic rules.
- * Intercepts *://*.be/* requests and sets Accept-Language to French,
+ * Intercepts *://*.be/* requests and sets Accept-Language to French or Dutch,
  * excluding domains in whitelist (storage.sync) and sessionBypassed (storage.session).
  */
 async function syncDnrRules() {
   if (!api.declarativeNetRequest?.updateDynamicRules) return;
 
-  const { enabled, whitelist } = await getSyncData();
+  const { enabled, targetLanguage, whitelist } = await getSyncData();
   const { sessionBypassed } = await getSessionData();
 
   // If disabled, remove dynamic rule
@@ -436,6 +470,8 @@ async function syncDnrRules() {
     condition.excludedRequestDomains = excludedDomains;
   }
 
+  const headerValue = targetLanguage === "nl" ? DUTCH_ACCEPT_LANGUAGE : FRENCH_ACCEPT_LANGUAGE;
+
   const rule = {
     id: RULE_ID_ACCEPT_LANGUAGE,
     priority: 1,
@@ -445,7 +481,7 @@ async function syncDnrRules() {
         {
           header: "Accept-Language",
           operation: "set",
-          value: FRENCH_ACCEPT_LANGUAGE
+          value: headerValue
         }
       ]
     },
@@ -466,12 +502,13 @@ async function syncDnrRules() {
 // UI Badge Status
 // =============================================================================
 
-async function updateBadge(tabId, state) {
+async function updateBadge(tabId, state, targetLang = "fr") {
   if (!api.action?.setBadgeText) return;
+  const badgeText = targetLang === "nl" ? "NL" : "FR";
   try {
     switch (state) {
       case "active":
-        await api.action.setBadgeText({ tabId, text: "FR" });
+        await api.action.setBadgeText({ tabId, text: badgeText });
         await api.action.setBadgeBackgroundColor({ tabId, color: "#2563eb" }); // Blue
         break;
       case "whitelisted":
@@ -507,30 +544,30 @@ async function refreshTabBadge(tabId, url) {
   const tld = hostParts[hostParts.length - 1];
   const isBe = tld === "be" || hostname === "be";
   const isCommercialCom = tld === "com";
-  const isFrenchSub = hostParts.length > 2 && hostParts[0] === "fr";
 
-  const { enabled, whitelist } = await getSyncData();
+  const { enabled, targetLanguage, whitelist } = await getSyncData();
+  const isTargetSub = hostParts.length > 2 && hostParts[0] === targetLanguage;
 
   if (!enabled) {
-    await updateBadge(tabId, "disabled");
+    await updateBadge(tabId, "disabled", targetLanguage);
     return;
   }
 
   if (isDomainExcluded(hostname, whitelist)) {
-    await updateBadge(tabId, "whitelisted");
+    await updateBadge(tabId, "whitelisted", targetLanguage);
     return;
   }
 
   const { sessionBypassed } = await getSessionData();
   if (isDomainExcluded(hostname, sessionBypassed)) {
-    await updateBadge(tabId, "bypassed");
+    await updateBadge(tabId, "bypassed", targetLanguage);
     return;
   }
 
-  if (isBe || (isCommercialCom && isFrenchSub) || isFrenchSub || isDutchUrl(url)) {
-    await updateBadge(tabId, "active");
+  if (isBe || (isCommercialCom && isTargetSub) || isTargetSub || isSourceLangUrl(url, targetLanguage)) {
+    await updateBadge(tabId, "active", targetLanguage);
   } else {
-    await updateBadge(tabId, "idle");
+    await updateBadge(tabId, "idle", targetLanguage);
   }
 }
 
@@ -557,16 +594,16 @@ async function handleUrlNavigation(tabId, url) {
   const tld = hostParts[hostParts.length - 1];
   const isBeDomain = tld === "be" || hostname === "be";
 
-  // Check global enable state
-  const { enabled, whitelist } = await getSyncData();
+  // Check global enable state & target language preference
+  const { enabled, targetLanguage, whitelist } = await getSyncData();
   if (!enabled) {
-    await updateBadge(tabId, "disabled");
+    await updateBadge(tabId, "disabled", targetLanguage);
     return;
   }
 
   // Check persistent whitelist
   if (isDomainExcluded(hostname, whitelist)) {
-    await updateBadge(tabId, "whitelisted");
+    await updateBadge(tabId, "whitelisted", targetLanguage);
     return;
   }
 
@@ -574,7 +611,7 @@ async function handleUrlNavigation(tabId, url) {
   const session = await getSessionData();
   const sessionBypassed = session.sessionBypassed || [];
   if (isDomainExcluded(hostname, sessionBypassed)) {
-    await updateBadge(tabId, "bypassed");
+    await updateBadge(tabId, "bypassed", targetLanguage);
     return;
   }
 
@@ -582,23 +619,23 @@ async function handleUrlNavigation(tabId, url) {
   const now = Date.now();
 
   // Loop Guard check:
-  // If this tab was redirected from nl -> fr within 5 seconds
+  // If this tab was redirected within 5 seconds
   if (pending && (now - pending.timestamp < REDIRECT_LOOP_WINDOW_MS)) {
     const isSameDomain = hostname === pending.domain || hostname.endsWith("." + pending.domain);
     if (isSameDomain) {
-      // If server bounced us back to nl or the original URL:
-      if (isDutchUrl(url) || url === pending.fromUrl) {
+      // If server bounced back to source language or the original URL:
+      if (isSourceLangUrl(url, targetLanguage) || url === pending.fromUrl) {
         console.warn(`[No Dutch Please] Redirect loop detected for ${hostname}! Bypassing for this session.`);
         await clearPendingRedirect(tabId);
         await markDomainSessionBypassed(pending.domain);
-        await updateBadge(tabId, "bypassed");
+        await updateBadge(tabId, "bypassed", targetLanguage);
         return;
       }
     }
   }
 
-  // Calculate potential French URL
-  const rewrittenUrl = rewriteUrl(url);
+  // Calculate potential rewritten URL for targetLanguage
+  const rewrittenUrl = rewriteUrl(url, targetLanguage);
   if (rewrittenUrl && rewrittenUrl !== url) {
     // Record pending redirect before executing
     await setPendingRedirect(tabId, {
@@ -610,19 +647,19 @@ async function handleUrlNavigation(tabId, url) {
 
     try {
       await api.tabs.update(tabId, { url: rewrittenUrl });
-      await updateBadge(tabId, "active");
+      await updateBadge(tabId, "active", targetLanguage);
     } catch (err) {
       console.error("[No Dutch Please] tabs.update error:", err);
     }
   } else {
     // URL does not need rewrite
     const isCommercialCom = tld === "com";
-    const isFrenchSub = hostParts.length > 2 && hostParts[0] === "fr";
+    const isTargetSub = hostParts.length > 2 && hostParts[0] === targetLanguage;
 
-    if (isBeDomain || (isCommercialCom && isFrenchSub) || isFrenchSub) {
-      await updateBadge(tabId, "active");
+    if (isBeDomain || (isCommercialCom && isTargetSub) || isTargetSub) {
+      await updateBadge(tabId, "active", targetLanguage);
     } else {
-      await updateBadge(tabId, "idle");
+      await updateBadge(tabId, "idle", targetLanguage);
     }
   }
 }
@@ -636,9 +673,10 @@ async function handle404Report(tabId, reportedUrl) {
   // Only revert when the 404 is on the page we redirected to.
   if (reportedUrl && reportedUrl !== pending.toUrl) return;
 
+  const { targetLanguage } = await getSyncData();
   const now = Date.now();
   if (now - pending.timestamp < REDIRECT_LOOP_WINDOW_MS) {
-    console.warn(`[No Dutch Please] 404 detected after redirecting to ${reportedUrl}. Reverting to Dutch version and bypassing.`);
+    console.warn(`[No Dutch Please] 404 detected after redirecting to ${reportedUrl}. Reverting to fallback version and bypassing.`);
     const domain = pending.domain;
     const fallbackUrl = pending.fromUrl;
 
@@ -647,7 +685,7 @@ async function handle404Report(tabId, reportedUrl) {
 
     try {
       await api.tabs.update(tabId, { url: fallbackUrl });
-      await updateBadge(tabId, "bypassed");
+      await updateBadge(tabId, "bypassed", targetLanguage);
     } catch (err) {
       console.error("[No Dutch Please] 404 fallback tabs.update error:", err);
     }
@@ -658,14 +696,14 @@ async function handle404Report(tabId, reportedUrl) {
  * Returns comprehensive status for a given URL (used by popup)
  */
 async function getStatusForUrl(url) {
-  const { enabled, whitelist } = await getSyncData();
+  const { enabled, targetLanguage, whitelist } = await getSyncData();
   const { sessionBypassed } = await getSessionData();
 
   let hostname = "";
   let primaryDomain = "";
   let isBe = false;
   let isCommercialCom = false;
-  let isFrenchSub = false;
+  let isTargetSub = false;
 
   if (url && typeof url === "string") {
     try {
@@ -676,7 +714,7 @@ async function getStatusForUrl(url) {
       const tld = hostParts[hostParts.length - 1];
       isBe = tld === "be" || hostname === "be";
       isCommercialCom = tld === "com";
-      isFrenchSub = hostParts.length > 2 && hostParts[0] === "fr";
+      isTargetSub = hostParts.length > 2 && hostParts[0] === targetLanguage;
     } catch {}
   }
 
@@ -685,6 +723,8 @@ async function getStatusForUrl(url) {
 
   let state = "idle";
   let statusText = "Non-Belgian domain (Inactive)";
+
+  const langLabel = targetLanguage === "nl" ? "Dutch (nl-BE)" : "French (fr-FR)";
 
   if (!enabled) {
     state = "disabled";
@@ -697,17 +737,18 @@ async function getStatusForUrl(url) {
     statusText = "Temporarily Bypassed (Loop / 404)";
   } else if (isBe) {
     state = "active";
-    statusText = "Active — Forcing French (fr-FR)";
-  } else if (isCommercialCom && isFrenchSub) {
+    statusText = `Active — Forcing ${langLabel}`;
+  } else if (isCommercialCom && isTargetSub) {
     state = "active";
-    statusText = "Active — Commercial site (fr.*)";
-  } else if (isFrenchSub) {
+    statusText = `Active — Commercial site (${targetLanguage}.*)`;
+  } else if (isTargetSub) {
     state = "active";
-    statusText = "Active — French subdomain (fr.*)";
+    statusText = `Active — Target subdomain (${targetLanguage}.*)`;
   }
 
   return {
     enabled,
+    targetLanguage,
     hostname,
     primaryDomain,
     isBe,
@@ -768,6 +809,15 @@ if (api.runtime?.onMessage) {
       return true;
     }
 
+    if (message.type === "SET_TARGET_LANGUAGE") {
+      const targetLang = message.language === "nl" ? "nl" : "fr";
+      api.storage.sync.set({ targetLanguage: targetLang }).then(async () => {
+        await syncDnrRules();
+        sendResponse?.({ status: "ok", targetLanguage: targetLang });
+      });
+      return true;
+    }
+
     if (message.type === "RESET_SESSION_BYPASS") {
       resetSessionBypass(message.domain).then(() => {
         sendResponse?.({ status: "ok" });
@@ -796,9 +846,9 @@ if (api.storage?.onChanged) {
 // On install or startup
 if (api.runtime?.onInstalled) {
   api.runtime.onInstalled.addListener(async () => {
-    const { enabled } = await getSyncData();
+    const { enabled, targetLanguage } = await getSyncData();
     if (enabled === undefined) {
-      await api.storage.sync.set({ enabled: true, whitelist: [] });
+      await api.storage.sync.set({ enabled: true, targetLanguage: "fr", whitelist: [] });
     }
     await setSessionData({ sessionBypassed: [] });
     await syncDnrRules();
@@ -818,11 +868,14 @@ if (typeof module !== "undefined" && module.exports) {
     getPrimaryDomain,
     isDomainExcluded,
     applyCase,
+    getLanguagePair,
     rewriteLocaleString,
+    isSourceLangUrl,
     isDutchUrl,
     rewriteUrl,
     RULE_ID_ACCEPT_LANGUAGE,
     FRENCH_ACCEPT_LANGUAGE,
+    DUTCH_ACCEPT_LANGUAGE,
     REDIRECT_LOOP_WINDOW_MS
   };
 }
