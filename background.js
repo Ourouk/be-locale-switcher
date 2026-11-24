@@ -1,7 +1,7 @@
 /**
  * No Dutch Please - Background Script
  * Lightweight, privacy-friendly Manifest V3 extension for Chromium and Firefox.
- * Forces French locale on Belgian (.be) websites and international sites (e.g. nl.aliexpress.com)
+ * Forces French locale on Belgian (.be) websites and commercial (.com) sites
  * while keeping the rest of the web in your preferred browser language.
  */
 
@@ -14,6 +14,17 @@ const FRENCH_ACCEPT_LANGUAGE = "fr-FR,fr;q=0.9,fr-BE;q=0.8,en;q=0.7";
 const REDIRECT_LOOP_WINDOW_MS = 5000;
 const BE_TWO_LEVEL_TLDS = new Set(["ac.be", "mil.be", "gov.be"]);
 
+// Copies the capitalisation of a 2-letter sample (nl/NL/Nl/nL)
+// onto a 2-letter target (fr/FR/Fr/fR).
+function applyCase(sample, lower) {
+  const upper = lower.toUpperCase();
+  let out = "";
+  for (let i = 0; i < lower.length; i++) {
+    out += sample[i] && sample[i] !== sample[i].toLowerCase() ? upper[i] : lower[i];
+  }
+  return out;
+}
+
 // In-memory fallback if storage.session is unsupported or sleeps
 const memorySessionStore = {
   sessionBypassed: [],
@@ -22,7 +33,7 @@ const memorySessionStore = {
 
 /**
  * Extracts primary registrable domain from hostname.
- * e.g., "nl.vrt.be" -> "vrt.be", "nl.aliexpress.com" -> "aliexpress.com", "sub.ulb.ac.be" -> "ulb.ac.be"
+ * e.g., "nl.vrt.be" -> "vrt.be", "nl.example.com" -> "example.com", "sub.ulb.ac.be" -> "ulb.ac.be"
  */
 function getPrimaryDomain(hostname) {
   if (!hostname || typeof hostname !== "string") return "";
@@ -60,24 +71,22 @@ function rewriteLocaleString(str, isBelgianDomain) {
   if (!str || typeof str !== "string") return str;
 
   // Exact 2-letter language code replacement (only on .be domains)
-  if (isBelgianDomain) {
-    if (str === "nl") return "fr";
-    if (str === "NL") return "FR";
-    if (str === "Nl") return "Fr";
+  if (isBelgianDomain && str.toLowerCase() === "nl") {
+    return applyCase(str, "fr");
   }
 
   // Regional Belgian code replacement: nl-be, be-nl, nl_BE, be_NL (valid on any domain)
   if (/^nl[-_]be$/i.test(str)) {
     const sep = str.includes("-") ? "-" : "_";
     const bePart = str.slice(3); // Preserves casing of "be" / "BE"
-    const frPart = str.startsWith("NL") ? "FR" : (str.startsWith("Nl") ? "Fr" : "fr");
+    const frPart = applyCase(str.slice(0, 2), "fr");
     return `${frPart}${sep}${bePart}`;
   }
 
   if (/^be[-_]nl$/i.test(str)) {
     const sep = str.includes("-") ? "-" : "_";
     const bePart = str.slice(0, 2);
-    const frPart = str.slice(3) === "NL" ? "FR" : "fr";
+    const frPart = applyCase(str.slice(3, 5), "fr");
     return `${bePart}${sep}${frPart}`;
   }
 
@@ -99,9 +108,10 @@ function isDutchUrl(inputUrl) {
   const hostParts = hostname.split(".");
   const tld = hostParts[hostParts.length - 1];
   const isBeDomain = tld === "be" || hostname === "be";
+  const isCommercialCom = tld === "com";
 
-  // Check subdomains (excluding genuine .nl Netherlands domains)
-  if (hostParts.length > 2 && tld !== "nl") {
+  // Subdomains: only .be and commercial .com (never generic nl.foo.org, never .nl)
+  if (hostParts.length > 2 && tld !== "nl" && (isBeDomain || isCommercialCom)) {
     const sub = hostParts[0].toLowerCase();
     if (sub === "nl" || sub === "nl-be" || sub === "nl_be") return true;
   }
@@ -139,7 +149,7 @@ function isDutchUrl(inputUrl) {
 
 /**
  * Smart URL Rewriter (nl -> fr)
- * Supports Belgian .be domains and international sites (e.g. nl.aliexpress.com, apple.com/be-nl/)
+ * Supports Belgian .be domains and commercial .com sites
  * Returns rewritten URL string if changes were made, or null if untouched.
  */
 function rewriteUrl(inputUrl) {
@@ -158,23 +168,24 @@ function rewriteUrl(inputUrl) {
   const hostParts = hostname.split(".");
   const tld = hostParts[hostParts.length - 1];
   const isBeDomain = tld === "be" || hostname === "be";
+  const isCommercialCom = tld === "com";
 
   let changed = false;
 
   // 1. Subdomain rewriting:
-  // Rewrites "nl." to "fr." on .be domains and international sites (e.g. nl.aliexpress.com -> fr.aliexpress.com)
+  // Rewrites "nl." to "fr." only on .be and commercial .com domains
   // Never touches genuine Netherlands websites ending in .nl (e.g. nos.nl, nl.example.nl)
-  if (hostParts.length > 2 && tld !== "nl") {
+  if (hostParts.length > 2 && tld !== "nl" && (isBeDomain || isCommercialCom)) {
     const sub = hostParts[0];
     const subLower = sub.toLowerCase();
 
     if (subLower === "nl") {
-      hostParts[0] = sub === "NL" ? "FR" : "fr";
+      hostParts[0] = "fr";
       urlObj.hostname = hostParts.join(".");
       changed = true;
     } else if (subLower === "nl-be" || subLower === "nl_be") {
       const sep = sub.includes("-") ? "-" : "_";
-      hostParts[0] = (sub.startsWith("NL") ? "FR" : "fr") + sep + sub.slice(3);
+      hostParts[0] = "fr" + sep + sub.slice(3);
       urlObj.hostname = hostParts.join(".");
       changed = true;
     }
@@ -194,14 +205,12 @@ function rewriteUrl(inputUrl) {
       const nextLower = nextSeg.toLowerCase();
 
       if (segLower === "be" && nextLower === "nl") {
-        segments[i + 1] = nextSeg === "NL" ? "FR" : "fr";
+        segments[i + 1] = applyCase(nextSeg, "fr");
         pathChanged = true;
-        break;
       }
       if (segLower === "nl" && nextLower === "be") {
-        segments[i] = seg === "NL" ? "FR" : "fr";
+        segments[i] = applyCase(seg, "fr");
         pathChanged = true;
-        break;
       }
     }
 
@@ -210,7 +219,6 @@ function rewriteUrl(inputUrl) {
     if (rewritten !== seg) {
       segments[i] = rewritten;
       pathChanged = true;
-      break;
     }
   }
 
@@ -219,23 +227,37 @@ function rewriteUrl(inputUrl) {
     changed = true;
   }
 
-  // 3. Query parameters rewriting
+  // 3. Query parameters: edit the raw query string so untouched
+  // parameters keep their exact bytes (order, encoding, duplicates).
   const langKeyRegex = /^(.*_)?(lang|locale|language|lng|hl)$/i;
-  const searchParams = new URLSearchParams(urlObj.search);
   let queryChanged = false;
-
-  for (const [key, val] of Array.from(searchParams.entries())) {
-    if (langKeyRegex.test(key)) {
-      const rewritten = rewriteLocaleString(val, isBeDomain);
-      if (rewritten !== val) {
-        searchParams.set(key, rewritten);
-        queryChanged = true;
+  if (urlObj.search.length > 1) {
+    const out = urlObj.search.slice(1).split("&").map((pair) => {
+      const eq = pair.indexOf("=");
+      const rawKey = eq < 0 ? pair : pair.slice(0, eq);
+      const rawVal = eq < 0 ? "" : pair.slice(eq + 1);
+      let key;
+      try {
+        key = decodeURIComponent(rawKey.replace(/\+/g, " "));
+      } catch {
+        return pair;
       }
-    }
+      if (!langKeyRegex.test(key)) return pair;
+      let val;
+      try {
+        val = decodeURIComponent(rawVal.replace(/\+/g, " "));
+      } catch {
+        return pair;
+      }
+      const rewritten = rewriteLocaleString(val, isBeDomain);
+      if (rewritten === val) return pair;
+      queryChanged = true;
+      return `${rawKey}=${encodeURIComponent(rewritten)}`;
+    });
+    if (queryChanged) urlObj.search = "?" + out.join("&");
   }
 
   if (queryChanged) {
-    urlObj.search = searchParams.toString();
     changed = true;
   }
 
@@ -281,17 +303,54 @@ async function setSessionData(data) {
   if (data.sessionBypassed !== undefined) {
     memorySessionStore.sessionBypassed = data.sessionBypassed;
   }
-  if (data.pendingRedirects !== undefined) {
-    memorySessionStore.pendingRedirects = data.pendingRedirects;
-  }
 
   if (api.storage?.session) {
     try {
-      await api.storage.session.set(data);
+      const { pendingRedirects, ...rest } = data;
+      void pendingRedirects;
+      await api.storage.session.set(rest);
       return;
     } catch (err) {
       console.warn("[No Dutch Please] storage.session.set error:", err);
     }
+  }
+}
+
+// Per-tab pending redirects: one storage key per tab, so two tabs
+// redirecting at once never overwrite each other.
+function pendingKey(tabId) {
+  return `pendingRedirect_${tabId}`;
+}
+
+async function getPendingRedirect(tabId) {
+  if (memorySessionStore.pendingRedirects?.[tabId]) {
+    return memorySessionStore.pendingRedirects[tabId];
+  }
+  if (api.storage?.session) {
+    try {
+      const data = await api.storage.session.get(pendingKey(tabId));
+      return data[pendingKey(tabId)] || null;
+    } catch {}
+  }
+  return null;
+}
+
+async function setPendingRedirect(tabId, value) {
+  if (!memorySessionStore.pendingRedirects) memorySessionStore.pendingRedirects = {};
+  memorySessionStore.pendingRedirects[tabId] = value;
+  if (api.storage?.session) {
+    try {
+      await api.storage.session.set({ [pendingKey(tabId)]: value });
+    } catch {}
+  }
+}
+
+async function clearPendingRedirect(tabId) {
+  if (memorySessionStore.pendingRedirects) delete memorySessionStore.pendingRedirects[tabId];
+  if (api.storage?.session) {
+    try {
+      await api.storage.session.remove(pendingKey(tabId));
+    } catch {}
   }
 }
 
@@ -301,10 +360,9 @@ async function setSessionData(data) {
  */
 async function markDomainSessionBypassed(domain) {
   if (!domain) return;
-  const primary = getPrimaryDomain(domain);
+  // Exact host only: bypassing vrt.be must not silence sub.vrt.be.
   const session = await getSessionData();
   const set = new Set(session.sessionBypassed || []);
-  if (primary) set.add(primary.toLowerCase());
   set.add(domain.toLowerCase());
 
   await setSessionData({ sessionBypassed: Array.from(set) });
@@ -335,7 +393,7 @@ async function resetSessionBypass(domain) {
 
 /**
  * Synchronizes declarativeNetRequest dynamic rules.
- * Intercepts *://*.be/* and *://*.aliexpress.com/* requests and sets Accept-Language to French,
+ * Intercepts *://*.be/* requests and sets Accept-Language to French,
  * excluding domains in whitelist (storage.sync) and sessionBypassed (storage.session).
  */
 async function syncDnrRules() {
@@ -357,13 +415,20 @@ async function syncDnrRules() {
     return;
   }
 
-  // Combine and deduplicate excluded domains
+  // Combine and deduplicate excluded domains. Browsers cap excluded
+  // domains per rule: keep the first 100 and warn, instead of
+  // failing the whole update and leaving a stale rule behind.
   const excludedDomains = Array.from(new Set([...whitelist, ...sessionBypassed]))
     .map((d) => d.trim().toLowerCase())
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, 100);
+  const totalExcluded = new Set([...whitelist, ...sessionBypassed].map((d) => (d || "").trim().toLowerCase())).size;
+  if (totalExcluded > excludedDomains.length) {
+    console.warn(`[No Dutch Please] ${totalExcluded - excludedDomains.length} excluded domains dropped (100-domain rule limit).`);
+  }
 
   const condition = {
-    regexFilter: "^https?://([^/:]+\\.)?([^/:]+\\.be|aliexpress\\.com)(:[0-9]+)?/",
+    regexFilter: "^https?://[^/:]+\\.be(:[0-9]+)?/",
     resourceTypes: ["main_frame", "sub_frame", "xmlhttprequest"]
   };
 
@@ -441,7 +506,7 @@ async function refreshTabBadge(tabId, url) {
   const hostParts = hostname.split(".");
   const tld = hostParts[hostParts.length - 1];
   const isBe = tld === "be" || hostname === "be";
-  const isAliexpress = hostname.includes("aliexpress.com");
+  const isCommercialCom = tld === "com";
   const isFrenchSub = hostParts.length > 2 && hostParts[0] === "fr";
 
   const { enabled, whitelist } = await getSyncData();
@@ -462,7 +527,7 @@ async function refreshTabBadge(tabId, url) {
     return;
   }
 
-  if (isBe || isAliexpress || isFrenchSub || isDutchUrl(url)) {
+  if (isBe || (isCommercialCom && isFrenchSub) || isFrenchSub || isDutchUrl(url)) {
     await updateBadge(tabId, "active");
   } else {
     await updateBadge(tabId, "idle");
@@ -513,8 +578,7 @@ async function handleUrlNavigation(tabId, url) {
     return;
   }
 
-  const pendingRedirects = session.pendingRedirects || {};
-  const pending = pendingRedirects[tabId];
+  const pending = await getPendingRedirect(tabId);
   const now = Date.now();
 
   // Loop Guard check:
@@ -525,9 +589,8 @@ async function handleUrlNavigation(tabId, url) {
       // If server bounced us back to nl or the original URL:
       if (isDutchUrl(url) || url === pending.fromUrl) {
         console.warn(`[No Dutch Please] Redirect loop detected for ${hostname}! Bypassing for this session.`);
-        delete pendingRedirects[tabId];
+        await clearPendingRedirect(tabId);
         await markDomainSessionBypassed(pending.domain);
-        await setSessionData({ pendingRedirects });
         await updateBadge(tabId, "bypassed");
         return;
       }
@@ -538,13 +601,12 @@ async function handleUrlNavigation(tabId, url) {
   const rewrittenUrl = rewriteUrl(url);
   if (rewrittenUrl && rewrittenUrl !== url) {
     // Record pending redirect before executing
-    pendingRedirects[tabId] = {
-      domain: getPrimaryDomain(hostname),
+    await setPendingRedirect(tabId, {
+      domain: hostname,
       fromUrl: url,
       toUrl: rewrittenUrl,
       timestamp: now
-    };
-    await setSessionData({ pendingRedirects });
+    });
 
     try {
       await api.tabs.update(tabId, { url: rewrittenUrl });
@@ -554,10 +616,10 @@ async function handleUrlNavigation(tabId, url) {
     }
   } else {
     // URL does not need rewrite
-    const isAliexpress = hostname.includes("aliexpress.com");
+    const isCommercialCom = tld === "com";
     const isFrenchSub = hostParts.length > 2 && hostParts[0] === "fr";
 
-    if (isBeDomain || isAliexpress || isFrenchSub) {
+    if (isBeDomain || (isCommercialCom && isFrenchSub) || isFrenchSub) {
       await updateBadge(tabId, "active");
     } else {
       await updateBadge(tabId, "idle");
@@ -569,10 +631,10 @@ async function handleUrlNavigation(tabId, url) {
  * Handles 404 reported after a redirect
  */
 async function handle404Report(tabId, reportedUrl) {
-  const session = await getSessionData();
-  const pendingRedirects = session.pendingRedirects || {};
-  const pending = pendingRedirects[tabId];
+  const pending = await getPendingRedirect(tabId);
   if (!pending) return;
+  // Only revert when the 404 is on the page we redirected to.
+  if (reportedUrl && reportedUrl !== pending.toUrl) return;
 
   const now = Date.now();
   if (now - pending.timestamp < REDIRECT_LOOP_WINDOW_MS) {
@@ -580,9 +642,8 @@ async function handle404Report(tabId, reportedUrl) {
     const domain = pending.domain;
     const fallbackUrl = pending.fromUrl;
 
-    delete pendingRedirects[tabId];
+    await clearPendingRedirect(tabId);
     await markDomainSessionBypassed(domain);
-    await setSessionData({ pendingRedirects });
 
     try {
       await api.tabs.update(tabId, { url: fallbackUrl });
@@ -603,7 +664,7 @@ async function getStatusForUrl(url) {
   let hostname = "";
   let primaryDomain = "";
   let isBe = false;
-  let isAliexpress = false;
+  let isCommercialCom = false;
   let isFrenchSub = false;
 
   if (url && typeof url === "string") {
@@ -614,7 +675,7 @@ async function getStatusForUrl(url) {
       const hostParts = hostname.split(".");
       const tld = hostParts[hostParts.length - 1];
       isBe = tld === "be" || hostname === "be";
-      isAliexpress = hostname.includes("aliexpress.com");
+      isCommercialCom = tld === "com";
       isFrenchSub = hostParts.length > 2 && hostParts[0] === "fr";
     } catch {}
   }
@@ -637,9 +698,9 @@ async function getStatusForUrl(url) {
   } else if (isBe) {
     state = "active";
     statusText = "Active — Forcing French (fr-FR)";
-  } else if (isAliexpress) {
+  } else if (isCommercialCom && isFrenchSub) {
     state = "active";
-    statusText = "Active (AliExpress) — Forcing French (fr.aliexpress.com)";
+    statusText = "Active — Commercial site (fr.*)";
   } else if (isFrenchSub) {
     state = "active";
     statusText = "Active — French subdomain (fr.*)";
@@ -687,11 +748,7 @@ if (api.tabs?.onActivated) {
 // Clean up pending redirects when tab is closed
 if (api.tabs?.onRemoved) {
   api.tabs.onRemoved.addListener(async (tabId) => {
-    const session = await getSessionData();
-    if (session.pendingRedirects && session.pendingRedirects[tabId]) {
-      delete session.pendingRedirects[tabId];
-      await setSessionData({ pendingRedirects: session.pendingRedirects });
-    }
+    await clearPendingRedirect(tabId);
   });
 }
 
@@ -743,14 +800,14 @@ if (api.runtime?.onInstalled) {
     if (enabled === undefined) {
       await api.storage.sync.set({ enabled: true, whitelist: [] });
     }
-    await setSessionData({ sessionBypassed: [], pendingRedirects: {} });
+    await setSessionData({ sessionBypassed: [] });
     await syncDnrRules();
   });
 }
 
 if (api.runtime?.onStartup) {
   api.runtime.onStartup.addListener(async () => {
-    await setSessionData({ sessionBypassed: [], pendingRedirects: {} });
+    await setSessionData({ sessionBypassed: [] });
     await syncDnrRules();
   });
 }
@@ -760,6 +817,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     getPrimaryDomain,
     isDomainExcluded,
+    applyCase,
     rewriteLocaleString,
     isDutchUrl,
     rewriteUrl,

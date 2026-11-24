@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const CHROME_MANIFEST = path.join(ROOT_DIR, 'manifest.chrome.json');
@@ -55,10 +55,10 @@ function activate(browser) {
 }
 
 function createZipArchive(destZip, items) {
-  const pythonScript = `
-import zipfile, os
-dest = r"${destZip}"
-items = ${JSON.stringify(items)}
+  // No shell: paths travel as argv, so quotes in names cannot escape.
+  const pythonScript = `import sys, json, zipfile, os
+dest = sys.argv[1]
+items = json.loads(sys.argv[2])
 with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
   for item in items:
     if os.path.isdir(item):
@@ -70,7 +70,7 @@ with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
     elif os.path.exists(item):
       z.write(item, os.path.basename(item))
 `;
-  execSync(`python3 -c '${pythonScript.replace(/'/g, "\\'")}'`, { cwd: ROOT_DIR });
+  execFileSync("python3", ["-c", pythonScript, destZip, JSON.stringify(items)], { cwd: ROOT_DIR });
 }
 
 function packageExtensions() {

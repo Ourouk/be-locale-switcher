@@ -46,7 +46,7 @@ When your browser language is set to English, visiting Belgian (`.be`) websites 
 
 - **Strict Privacy & Zero Dependencies:**
   - Zero external libraries or npm build requirements.
-  - Permissions strictly scoped (`*://*.be/*`). No broad tracking permissions.
+  - Permissions strictly scoped to Belgian sites (`*://*.be/*`). Dutch subdomains on .be and commercial .com domains are rewritten to French, while non-commercial Dutch pages elsewhere (e.g. `nl.wikipedia.org`) and domestic Netherlands domains (`.nl`) are left untouched. No broad tracking permissions.
   - Memory-efficient background execution (idle event handlers).
 
 ---
@@ -72,9 +72,8 @@ no-dutch-please/
 │   └── icon-128.png          # 128x128 PNG
 ├── scripts/
 │   ├── build.js              # Manifest switcher and .zip packaging utility
-│   └── build.sh              # Bash switcher wrapper
 ├── test/
-│   └── test-suite.js         # Automated test suite (22 unit & integration tests)
+│   └── test-suite.js         # Automated test suite (unit & integration tests)
 ├── dist/                     # Packaged zip releases
 └── package.json              # NPM metadata and scripts
 ```

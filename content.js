@@ -9,26 +9,11 @@
 
   function isPage404() {
     try {
-      // 1. Check HTTP response status code via PerformanceNavigationTiming
+      // Only trust the real HTTP status code. Title/heading text
+      // ("not found", "introuvable", ...) matches too many real pages.
       const [navEntry] = performance.getEntriesByType("navigation");
       if (navEntry && navEntry.responseStatus === 404) {
         return true;
-      }
-
-      // 2. Check document title for common 404 patterns in French, Dutch, and English
-      const title = (document.title || "").trim();
-      const pattern404 = /(?:^|\D)404(?:\D|$)|not found|page non trouvée|page introuvable|pagina niet gevonden|niet gevonden|introuvable/i;
-      if (pattern404.test(title)) {
-        return true;
-      }
-
-      // 3. Check main heading if title is generic
-      const h1 = document.querySelector("h1");
-      if (h1) {
-        const h1Text = (h1.textContent || "").trim();
-        if (pattern404.test(h1Text)) {
-          return true;
-        }
       }
     } catch {}
     return false;

@@ -11,3 +11,6 @@ yarn-error.log*
 # Temporary files
 *.tmp
 *.log
+
+# Release artifacts
+dist/
