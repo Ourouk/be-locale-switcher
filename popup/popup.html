@@ -14,7 +14,7 @@
         <img src="../icons/icon-32.png" alt="BE Locale Switcher" class="brand-icon">
         <div class="brand-text">
           <h1 class="brand-title">BE Locale Switcher</h1>
-          <span id="brand-subtitle" class="brand-subtitle">Belgian Locale Switcher</span>
+          <span id="brand-subtitle" class="brand-subtitle">Belgian Locale Enforcer</span>
         </div>
       </div>
       <!-- Global Toggle Switch -->
@@ -37,15 +37,6 @@
       </div>
     </div>
 
-    <!-- Firefox Host Permission Banner (hidden by default) -->
-    <div id="permission-banner" class="banner banner-warning hidden">
-      <div class="banner-content">
-        <span class="banner-title">Permission required</span>
-        <span class="banner-desc">Firefox needs permission to modify headers on Belgian (.be) sites.</span>
-      </div>
-      <button id="grant-permission-btn" class="btn btn-sm btn-accent">Grant</button>
-    </div>
-
     <!-- Active Site Card -->
     <section class="card site-card">
       <div class="site-header">
@@ -61,30 +52,43 @@
         </div>
       </div>
 
-      <!-- Action Buttons for Current Site -->
+      <!-- Action Button for Current Site -->
       <div class="site-actions">
-        <button id="whitelist-toggle-btn" class="btn btn-secondary" disabled>
-          <span id="whitelist-btn-icon" class="btn-icon">🚫</span>
-          <span id="whitelist-btn-text">Ignore this site</span>
-        </button>
-
-        <button id="reset-bypass-btn" class="btn btn-outline hidden">
-          <span class="btn-icon">↺</span>
-          <span>Reset Session Bypass</span>
+        <button id="site-action-btn" class="btn btn-secondary" disabled>
+          <span id="site-action-icon" class="btn-icon">⚡</span>
+          <span id="site-action-text">Loading...</span>
         </button>
       </div>
     </section>
 
-    <!-- Whitelist Management Accordion -->
-    <section class="whitelist-section">
-      <button id="whitelist-accordion-btn" class="accordion-header">
-        <span id="whitelist-count-label">Ignored Sites (0)</span>
-        <span id="accordion-arrow" class="accordion-arrow">▾</span>
+    <!-- Injected Custom Domains Accordion -->
+    <section class="domain-section">
+      <button id="custom-accordion-btn" class="accordion-header">
+        <span id="custom-count-label">Injected Custom Domains (0)</span>
+        <span id="custom-accordion-arrow" class="accordion-arrow">▾</span>
       </button>
 
-      <div id="whitelist-accordion-content" class="accordion-content hidden">
-        <ul id="whitelist-items" class="whitelist-items">
-          <li class="whitelist-empty">No sites currently ignored.</li>
+      <div id="custom-accordion-content" class="accordion-content hidden">
+        <div class="add-domain-row">
+          <input type="text" id="custom-domain-input" placeholder="e.g. aliexpress.com" autocomplete="off" spellcheck="false">
+          <button id="add-domain-btn" class="btn btn-sm btn-primary">Add</button>
+        </div>
+        <ul id="custom-domain-items" class="domain-items-list">
+          <li class="domain-empty">No custom domains added yet.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Excluded .BE Domains (Only visible when user excluded a .be site) -->
+    <section id="excluded-section" class="domain-section hidden">
+      <button id="excluded-accordion-btn" class="accordion-header">
+        <span id="excluded-count-label">Excluded .BE Sites (0)</span>
+        <span id="excluded-accordion-arrow" class="accordion-arrow">▾</span>
+      </button>
+
+      <div id="excluded-accordion-content" class="accordion-content hidden">
+        <ul id="excluded-domain-items" class="domain-items-list">
+          <li class="domain-empty">No .be sites excluded.</li>
         </ul>
       </div>
     </section>
@@ -92,7 +96,7 @@
     <!-- Footer -->
     <footer class="footer">
       <span id="footer-badge" class="footer-badge">fr-FR &bull; .BE</span>
-      <span class="footer-privacy">Zero-bloat &bull; Privacy-friendly</span>
+      <span class="footer-privacy">Zero-bloat &bull; DNR Headers</span>
     </footer>
   </div>
 

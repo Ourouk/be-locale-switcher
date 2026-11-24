@@ -396,8 +396,8 @@ input:checked + .slider:before {
   color: var(--text-secondary);
 }
 
-/* Whitelist Accordion */
-.whitelist-section {
+/* Domain Sections & Accordions */
+.domain-section {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   background-color: var(--bg-secondary);
@@ -426,58 +426,82 @@ input:checked + .slider:before {
   transition: transform 0.2s ease;
 }
 
-.accordion-open #accordion-arrow {
+.accordion-open .accordion-arrow {
   transform: rotate(180deg);
 }
 
 .accordion-content {
-  max-height: 120px;
-  overflow-y: auto;
   border-top: 1px solid var(--border-color);
   background-color: var(--bg-primary);
 }
 
-.whitelist-items {
-  list-style: none;
+.add-domain-row {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
 }
 
-.whitelist-item {
+.add-domain-row input {
+  flex: 1;
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.add-domain-row input:focus {
+  border-color: var(--accent-color);
+}
+
+.domain-items-list {
+  list-style: none;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.domain-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 12px;
+  padding: 6px 10px;
   font-size: 11px;
   border-bottom: 1px solid var(--border-color);
 }
 
-.whitelist-item:last-child {
+.domain-item:last-child {
   border-bottom: none;
 }
 
-.whitelist-item-domain {
+.domain-item-text {
   font-family: monospace;
   color: var(--text-primary);
 }
 
-.whitelist-remove-btn {
+.domain-empty {
+  padding: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.btn-remove {
   background: none;
   border: none;
   color: var(--danger-color);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   padding: 2px 6px;
   border-radius: 4px;
+  line-height: 1;
 }
 
-.whitelist-remove-btn:hover {
+.btn-remove:hover {
   background-color: var(--danger-bg);
-}
-
-.whitelist-empty {
-  padding: 10px;
-  text-align: center;
-  font-size: 11px;
-  color: var(--text-muted);
 }
 
 /* Footer */

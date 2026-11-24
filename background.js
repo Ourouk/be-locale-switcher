@@ -1,497 +1,179 @@
 /**
  * BE Locale Switcher - Background Script
  * Lightweight, privacy-friendly Manifest V3 extension for Chromium and Firefox.
- * Bi-directional locale enforcement for Belgian (.be) websites and commercial (.com) sites.
- * Defaults sites to French (NL -> FR) or Dutch (FR -> NL) based on user preference,
- * while keeping the rest of the web in your preferred browser language.
+ * Focuses purely on Accept-Language locale modifications via declarativeNetRequest:
+ *  - Automatically applies to all Belgian (.be) websites.
+ *  - Allows manually adding any custom domain to an injection whitelist.
  */
 
-// Browser API namespace shim for cross-browser compatibility
+// Cross-browser compatibility shim
 const api = globalThis.browser ?? globalThis.chrome ?? {};
 
 // Core Constants
-const RULE_ID_ACCEPT_LANGUAGE = 1;
+const RULE_ID_BE_DOMAINS = 1;
+const RULE_ID_CUSTOM_DOMAINS = 2;
+
 const FRENCH_ACCEPT_LANGUAGE = "fr-FR,fr;q=0.9,fr-BE;q=0.8,en;q=0.7";
 const DUTCH_ACCEPT_LANGUAGE = "nl-BE,nl;q=0.9,nl-NL;q=0.8,en;q=0.7";
-const REDIRECT_LOOP_WINDOW_MS = 5000;
-const BE_TWO_LEVEL_TLDS = new Set(["ac.be", "mil.be", "gov.be"]);
 
-// Helper: resolves source & target language pair
-function getLanguagePair(targetLang = "fr") {
-  const target = targetLang === "nl" ? "nl" : "fr";
-  const source = target === "fr" ? "nl" : "fr";
-  return { source, target };
-}
-
-// Copies the capitalisation of a 2-letter sample (e.g. nl/NL/Nl/nL or fr/FR/Fr/fR)
-// onto a 2-letter target.
-function applyCase(sample, target) {
-  const upper = target.toUpperCase();
-  const lower = target.toLowerCase();
-  let out = "";
-  for (let i = 0; i < target.length; i++) {
-    out += sample[i] && sample[i] !== sample[i].toLowerCase() ? upper[i] : lower[i];
-  }
-  return out;
-}
-
-// In-memory fallback if storage.session is unsupported or sleeps
-const memorySessionStore = {
-  sessionBypassed: [],
-  pendingRedirects: {}
+// In-memory sync fallback for test environments
+let memorySyncStore = {
+  enabled: true,
+  targetLanguage: "fr",
+  customDomains: [],
+  excludedBeDomains: []
 };
 
-/**
- * Extracts primary registrable domain from hostname.
- * e.g., "nl.vrt.be" -> "vrt.be", "nl.example.com" -> "example.com", "sub.ulb.ac.be" -> "ulb.ac.be"
- */
-function getPrimaryDomain(hostname) {
-  if (!hostname || typeof hostname !== "string") return "";
-  hostname = hostname.toLowerCase();
-  const parts = hostname.split(".");
-  if (parts.length <= 2) return hostname;
+// =============================================================================
+// Domain Utilities
+// =============================================================================
 
-  const lastTwo = parts.slice(-2).join(".");
-  if (BE_TWO_LEVEL_TLDS.has(lastTwo) && parts.length >= 3) {
-    return parts.slice(-3).join(".");
-  }
-  return lastTwo;
+/**
+ * Checks if a hostname belongs to the Belgian country-code TLD (.be).
+ */
+function isBeDomain(hostname) {
+  if (!hostname || typeof hostname !== "string") return false;
+  const clean = hostname.toLowerCase().trim();
+  return clean === "be" || clean.endsWith(".be");
 }
 
 /**
- * Checks whether a hostname matches any domain in an excluded list.
- * Supports exact match, subdomain match, and primary domain match.
+ * Normalizes a raw string, URL, or domain input into a clean hostname.
  */
-function isDomainExcluded(hostname, excludedList = []) {
-  if (!hostname || !excludedList || !excludedList.length) return false;
-  hostname = hostname.toLowerCase();
-  const primary = getPrimaryDomain(hostname);
+function normalizeDomain(input) {
+  if (!input || typeof input !== "string") return "";
+  let clean = input.trim().toLowerCase();
+  // Strip protocol if present
+  clean = clean.replace(/^[a-z]+:\/\//i, "");
+  // Strip port, path, query, and trailing slash
+  clean = clean.split("/")[0].split("?")[0].split("#")[0].split(":")[0];
+  return clean;
+}
 
-  return excludedList.some((domain) => {
-    if (!domain) return false;
-    const d = domain.trim().toLowerCase();
-    return hostname === d || hostname.endsWith("." + d) || primary === d;
+/**
+ * Checks if a hostname matches any domain in a list (exact match or subdomain match).
+ */
+function isDomainMatching(hostname, domainList = []) {
+  if (!hostname || !Array.isArray(domainList)) return false;
+  const cleanHost = normalizeDomain(hostname);
+  return domainList.some((entry) => {
+    const cleanEntry = normalizeDomain(entry);
+    if (!cleanEntry) return false;
+    return cleanHost === cleanEntry || cleanHost.endsWith("." + cleanEntry);
   });
 }
 
-/**
- * Rewrites a locale string bi-directionally, preserving casing and separators.
- * e.g. when targetLang is "fr": nl -> fr, nl-be -> fr-be, be-nl -> be-fr
- * e.g. when targetLang is "nl": fr -> nl, fr-be -> nl-be, be-fr -> be-nl
- */
-function rewriteLocaleString(str, isBelgianDomain, targetLang = "fr") {
-  if (!str || typeof str !== "string") return str;
-  const { source, target } = getLanguagePair(targetLang);
-
-  // Exact 2-letter language code replacement (only on .be domains)
-  if (isBelgianDomain && str.toLowerCase() === source) {
-    return applyCase(str, target);
-  }
-
-  // Regional Belgian code replacement: {source}-be, be-{source}, {source}_BE, be_{source}
-  const sourceBeRegex = new RegExp(`^${source}[-_]be$`, "i");
-  if (sourceBeRegex.test(str)) {
-    const sep = str.includes("-") ? "-" : "_";
-    const bePart = str.slice(3); // Preserves casing of "be" / "BE"
-    const targetPart = applyCase(str.slice(0, 2), target);
-    return `${targetPart}${sep}${bePart}`;
-  }
-
-  const beSourceRegex = new RegExp(`^be[-_]${source}$`, "i");
-  if (beSourceRegex.test(str)) {
-    const sep = str.includes("-") ? "-" : "_";
-    const bePart = str.slice(0, 2);
-    const targetPart = applyCase(str.slice(3, 5), target);
-    return `${bePart}${sep}${targetPart}`;
-  }
-
-  return str;
-}
-
-/**
- * Checks if a given URL matches source language patterns for the selected direction.
- */
-function isSourceLangUrl(inputUrl, targetLang = "fr") {
-  let urlObj;
-  try {
-    urlObj = new URL(inputUrl);
-  } catch {
-    return false;
-  }
-
-  const { source } = getLanguagePair(targetLang);
-  const hostname = urlObj.hostname.toLowerCase();
-  const hostParts = hostname.split(".");
-  const tld = hostParts[hostParts.length - 1];
-  const isBeDomain = tld === "be" || hostname === "be";
-  const isCommercialCom = tld === "com";
-
-  // Prevent matching domestic sites of the source language (e.g. nos.nl or lemonde.fr)
-  if (tld === source) {
-    return false;
-  }
-
-  // Subdomains: only .be and commercial .com
-  if (hostParts.length > 2 && (isBeDomain || isCommercialCom)) {
-    const sub = hostParts[0].toLowerCase();
-    if (sub === source || sub === `${source}-be` || sub === `${source}_be`) return true;
-  }
-
-  // Check path segments
-  const segments = urlObj.pathname.split("/");
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i].toLowerCase();
-
-    // Two-segment combinations: /be/{source}/ or /{source}/be/
-    if (i + 1 < segments.length) {
-      const nextSeg = segments[i + 1].toLowerCase();
-      if ((seg === "be" && nextSeg === source) || (seg === source && nextSeg === "be")) {
-        return true;
-      }
-    }
-
-    if (new RegExp(`^(${source}[-_]be|be[-_]${source})$`, "i").test(seg)) return true;
-    if (isBeDomain && seg === source) return true;
-  }
-
-  // Check query parameters
-  const langKeyRegex = /^(.*_)?(lang|locale|language|lng|hl)$/i;
-  const searchParams = new URLSearchParams(urlObj.search);
-  for (const [key, val] of searchParams.entries()) {
-    if (langKeyRegex.test(key)) {
-      const v = val.toLowerCase();
-      if (v === `${source}-be` || v === `${source}_be` || v === `be-${source}` || v === `be_${source}`) return true;
-      if (isBeDomain && v === source) return true;
-    }
-  }
-
-  return false;
-}
-
-// Alias for backwards compatibility & tests
-const isDutchUrl = (url) => isSourceLangUrl(url, "fr");
-
-/**
- * Bi-directional Smart URL Rewriter
- * Works both ways:
- *  - When targetLang is "fr": rewrites Dutch (nl) to French (fr)
- *  - When targetLang is "nl": rewrites French (fr) to Dutch (nl)
- * Supports Belgian .be domains and commercial .com sites.
- * Returns rewritten URL string if changes were made, or null if untouched.
- */
-function rewriteUrl(inputUrl, targetLang = "fr") {
-  let urlObj;
-  try {
-    urlObj = new URL(inputUrl);
-  } catch {
-    return null;
-  }
-
-  if (urlObj.protocol !== "http:" && urlObj.protocol !== "https:") {
-    return null;
-  }
-
-  const { source, target } = getLanguagePair(targetLang);
-  const hostname = urlObj.hostname.toLowerCase();
-  const hostParts = hostname.split(".");
-  const tld = hostParts[hostParts.length - 1];
-  const isBeDomain = tld === "be" || hostname === "be";
-  const isCommercialCom = tld === "com";
-
-  // Prevent rewriting domestic sites of the source language
-  // (e.g. don't rewrite genuine .nl sites when source is nl, or genuine .fr sites when source is fr)
-  if (tld === source) {
-    return null;
-  }
-
-  let changed = false;
-
-  // 1. Subdomain rewriting:
-  // Rewrites bare source subdomain (nl. -> fr. or fr. -> nl.) on .be domains and commercial .com domains
-  if (hostParts.length > 2 && (isBeDomain || isCommercialCom)) {
-    const sub = hostParts[0];
-    const subLower = sub.toLowerCase();
-
-    if (subLower === source) {
-      hostParts[0] = applyCase(sub, target);
-      urlObj.hostname = hostParts.join(".");
-      changed = true;
-    } else if (subLower === `${source}-be` || subLower === `${source}_be`) {
-      const sep = sub.includes("-") ? "-" : "_";
-      hostParts[0] = applyCase(sub.slice(0, 2), target) + sep + sub.slice(3);
-      urlObj.hostname = hostParts.join(".");
-      changed = true;
-    }
-  }
-
-  // 2. Path segments rewriting
-  const segments = urlObj.pathname.split("/");
-  let pathChanged = false;
-
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    const segLower = seg.toLowerCase();
-
-    // Two-segment combinations: /be/{source}/ -> /be/{target}/, /{source}/be/ -> /{target}/be/
-    if (i + 1 < segments.length) {
-      const nextSeg = segments[i + 1];
-      const nextLower = nextSeg.toLowerCase();
-
-      if (segLower === "be" && nextLower === source) {
-        segments[i + 1] = applyCase(nextSeg, target);
-        pathChanged = true;
-      }
-      if (segLower === source && nextLower === "be") {
-        segments[i] = applyCase(seg, target);
-        pathChanged = true;
-      }
-    }
-
-    // Single-segment replacement: /{source}/ on .be, or /{source}-be/, /be-{source}/ on any domain
-    const rewritten = rewriteLocaleString(seg, isBeDomain, targetLang);
-    if (rewritten !== seg) {
-      segments[i] = rewritten;
-      pathChanged = true;
-    }
-  }
-
-  if (pathChanged) {
-    urlObj.pathname = segments.join("/");
-    changed = true;
-  }
-
-  // 3. Query parameters: edit the raw query string so untouched
-  // parameters keep their exact bytes (order, encoding, duplicates).
-  const langKeyRegex = /^(.*_)?(lang|locale|language|lng|hl)$/i;
-  let queryChanged = false;
-  if (urlObj.search.length > 1) {
-    const out = urlObj.search.slice(1).split("&").map((pair) => {
-      const eq = pair.indexOf("=");
-      const rawKey = eq < 0 ? pair : pair.slice(0, eq);
-      const rawVal = eq < 0 ? "" : pair.slice(eq + 1);
-      let key;
-      try {
-        key = decodeURIComponent(rawKey.replace(/\+/g, " "));
-      } catch {
-        return pair;
-      }
-      if (!langKeyRegex.test(key)) return pair;
-      let val;
-      try {
-        val = decodeURIComponent(rawVal.replace(/\+/g, " "));
-      } catch {
-        return pair;
-      }
-      const rewritten = rewriteLocaleString(val, isBeDomain, targetLang);
-      if (rewritten === val) return pair;
-      queryChanged = true;
-      return `${rawKey}=${encodeURIComponent(rewritten)}`;
-    });
-    if (queryChanged) urlObj.search = "?" + out.join("&");
-  }
-
-  if (queryChanged) {
-    changed = true;
-  }
-
-  return changed ? urlObj.toString() : null;
-}
-
 // =============================================================================
-// Storage & Session Management
+// Storage Access
 // =============================================================================
 
 async function getSyncData() {
-  try {
-    const data = await api.storage.sync.get(["enabled", "whitelist", "targetLanguage"]);
-    return {
-      enabled: data.enabled ?? true,
-      targetLanguage: data.targetLanguage === "nl" ? "nl" : "fr",
-      whitelist: Array.isArray(data.whitelist) ? data.whitelist : []
-    };
-  } catch (err) {
-    console.error("[BE Locale Switcher] storage.sync.get error:", err);
-    return { enabled: true, targetLanguage: "fr", whitelist: [] };
-  }
-}
-
-async function getSessionData() {
-  if (api.storage?.session) {
+  if (api.storage?.sync) {
     try {
-      const data = await api.storage.session.get(["sessionBypassed", "pendingRedirects"]);
+      const data = await api.storage.sync.get(["enabled", "targetLanguage", "customDomains", "excludedBeDomains"]);
       return {
-        sessionBypassed: Array.isArray(data.sessionBypassed) ? data.sessionBypassed : [],
-        pendingRedirects: data.pendingRedirects && typeof data.pendingRedirects === "object" ? data.pendingRedirects : {}
+        enabled: data.enabled !== undefined ? data.enabled : true,
+        targetLanguage: data.targetLanguage === "nl" ? "nl" : "fr",
+        customDomains: Array.isArray(data.customDomains) ? data.customDomains : [],
+        excludedBeDomains: Array.isArray(data.excludedBeDomains) ? data.excludedBeDomains : []
       };
     } catch (err) {
-      console.warn("[BE Locale Switcher] storage.session.get error:", err);
+      console.warn("[BE Locale Switcher] storage.sync.get error:", err);
     }
   }
-  return {
-    sessionBypassed: memorySessionStore.sessionBypassed || [],
-    pendingRedirects: memorySessionStore.pendingRedirects || {}
-  };
+  return { ...memorySyncStore };
 }
 
-async function setSessionData(data) {
-  if (data.sessionBypassed !== undefined) {
-    memorySessionStore.sessionBypassed = data.sessionBypassed;
-  }
-
-  if (api.storage?.session) {
+async function setSyncData(updates) {
+  memorySyncStore = { ...memorySyncStore, ...updates };
+  if (api.storage?.sync) {
     try {
-      const { pendingRedirects, ...rest } = data;
-      void pendingRedirects;
-      await api.storage.session.set(rest);
-      return;
+      await api.storage.sync.set(updates);
     } catch (err) {
-      console.warn("[BE Locale Switcher] storage.session.set error:", err);
+      console.warn("[BE Locale Switcher] storage.sync.set error:", err);
     }
   }
-}
-
-// Per-tab pending redirects: one storage key per tab, so two tabs
-// redirecting at once never overwrite each other.
-function pendingKey(tabId) {
-  return `pendingRedirect_${tabId}`;
-}
-
-async function getPendingRedirect(tabId) {
-  if (memorySessionStore.pendingRedirects?.[tabId]) {
-    return memorySessionStore.pendingRedirects[tabId];
-  }
-  if (api.storage?.session) {
-    try {
-      const data = await api.storage.session.get(pendingKey(tabId));
-      return data[pendingKey(tabId)] || null;
-    } catch {}
-  }
-  return null;
-}
-
-async function setPendingRedirect(tabId, value) {
-  if (!memorySessionStore.pendingRedirects) memorySessionStore.pendingRedirects = {};
-  memorySessionStore.pendingRedirects[tabId] = value;
-  if (api.storage?.session) {
-    try {
-      await api.storage.session.set({ [pendingKey(tabId)]: value });
-    } catch {}
-  }
-}
-
-async function clearPendingRedirect(tabId) {
-  if (memorySessionStore.pendingRedirects) delete memorySessionStore.pendingRedirects[tabId];
-  if (api.storage?.session) {
-    try {
-      await api.storage.session.remove(pendingKey(tabId));
-    } catch {}
-  }
-}
-
-/**
- * Temporarily marks a domain as bypassed in storage.session
- * so the user is not trapped by redirect loops or 404s.
- */
-async function markDomainSessionBypassed(domain) {
-  if (!domain) return;
-  // Exact host only: bypassing vrt.be must not silence sub.vrt.be.
-  const session = await getSessionData();
-  const set = new Set(session.sessionBypassed || []);
-  set.add(domain.toLowerCase());
-
-  await setSessionData({ sessionBypassed: Array.from(set) });
-  await syncDnrRules();
-}
-
-/**
- * Resets the session bypass for a specific domain.
- */
-async function resetSessionBypass(domain) {
-  if (!domain) return;
-  const primary = getPrimaryDomain(domain).toLowerCase();
-  const target = domain.toLowerCase();
-  const session = await getSessionData();
-
-  const filtered = (session.sessionBypassed || []).filter((d) => {
-    const dl = d.toLowerCase();
-    return dl !== target && dl !== primary;
-  });
-
-  await setSessionData({ sessionBypassed: filtered });
-  await syncDnrRules();
 }
 
 // =============================================================================
-// declarativeNetRequest (modifyHeaders) Management
+// DeclarativeNetRequest Rule Synchronization
 // =============================================================================
 
 /**
- * Synchronizes declarativeNetRequest dynamic rules.
- * Intercepts *://*.be/* requests and sets Accept-Language to French or Dutch,
- * excluding domains in whitelist (storage.sync) and sessionBypassed (storage.session).
+ * Builds declarativeNetRequest rules for .be and custom domains.
  */
-async function syncDnrRules() {
-  if (!api.declarativeNetRequest?.updateDynamicRules) return;
+function buildDnrRules(syncData) {
+  const { enabled, targetLanguage, customDomains, excludedBeDomains } = syncData;
+  if (!enabled) return [];
 
-  const { enabled, targetLanguage, whitelist } = await getSyncData();
-  const { sessionBypassed } = await getSessionData();
+  const targetHeader = targetLanguage === "nl" ? DUTCH_ACCEPT_LANGUAGE : FRENCH_ACCEPT_LANGUAGE;
+  const rules = [];
 
-  // If disabled, remove dynamic rule
-  if (!enabled) {
-    try {
-      await api.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: [RULE_ID_ACCEPT_LANGUAGE],
-        addRules: []
-      });
-    } catch (err) {
-      console.error("[BE Locale Switcher] Failed to disable DNR rules:", err);
-    }
-    return;
-  }
-
-  // Combine and deduplicate excluded domains. Browsers cap excluded
-  // domains per rule: keep the first 100 and warn, instead of
-  // failing the whole update and leaving a stale rule behind.
-  const excludedDomains = Array.from(new Set([...whitelist, ...sessionBypassed]))
-    .map((d) => d.trim().toLowerCase())
-    .filter(Boolean)
-    .slice(0, 100);
-  const totalExcluded = new Set([...whitelist, ...sessionBypassed].map((d) => (d || "").trim().toLowerCase())).size;
-  if (totalExcluded > excludedDomains.length) {
-    console.warn(`[BE Locale Switcher] ${totalExcluded - excludedDomains.length} excluded domains dropped (100-domain rule limit).`);
-  }
-
-  const condition = {
-    regexFilter: "^https?://[^/:]+\\.be(:[0-9]+)?/",
-    resourceTypes: ["main_frame", "sub_frame", "xmlhttprequest"]
-  };
-
-  if (excludedDomains.length > 0) {
-    condition.excludedRequestDomains = excludedDomains;
-  }
-
-  const headerValue = targetLanguage === "nl" ? DUTCH_ACCEPT_LANGUAGE : FRENCH_ACCEPT_LANGUAGE;
-
-  const rule = {
-    id: RULE_ID_ACCEPT_LANGUAGE,
+  // Rule 1: All Belgian (.be) domains (except any explicitly excluded)
+  const beRule = {
+    id: RULE_ID_BE_DOMAINS,
     priority: 1,
     action: {
       type: "modifyHeaders",
       requestHeaders: [
         {
-          header: "Accept-Language",
+          header: "accept-language",
           operation: "set",
-          value: headerValue
+          value: targetHeader
         }
       ]
     },
-    condition
+    condition: {
+      regexFilter: "^https?://[^/:]+\\.be(:[0-9]+)?/",
+      resourceTypes: ["main_frame", "sub_frame", "xmlhttprequest"]
+    }
   };
 
+  if (excludedBeDomains && excludedBeDomains.length > 0) {
+    beRule.condition.excludedDomains = excludedBeDomains.slice(0, 100);
+  }
+  rules.push(beRule);
+
+  // Rule 2: Custom domains whitelist where locale should be injected
+  if (customDomains && customDomains.length > 0) {
+    rules.push({
+      id: RULE_ID_CUSTOM_DOMAINS,
+      priority: 1,
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          {
+            header: "accept-language",
+            operation: "set",
+            value: targetHeader
+          }
+        ]
+      },
+      condition: {
+        domains: customDomains.slice(0, 100),
+        resourceTypes: ["main_frame", "sub_frame", "xmlhttprequest"]
+      }
+    });
+  }
+
+  return rules;
+}
+
+/**
+ * Synchronizes browser declarativeNetRequest rules with extension settings.
+ */
+async function syncDnrRules() {
+  if (!api.declarativeNetRequest?.updateDynamicRules) {
+    return;
+  }
+
   try {
+    const syncData = await getSyncData();
+    const rulesToAdd = buildDnrRules(syncData);
+
     await api.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: [RULE_ID_ACCEPT_LANGUAGE],
-      addRules: [rule]
+      removeRuleIds: [RULE_ID_BE_DOMAINS, RULE_ID_CUSTOM_DOMAINS],
+      addRules: rulesToAdd
     });
   } catch (err) {
     console.error("[BE Locale Switcher] Failed to update DNR rules:", err);
@@ -499,277 +181,108 @@ async function syncDnrRules() {
 }
 
 // =============================================================================
-// UI Badge Status
+// Toolbar Badge & Status
 // =============================================================================
 
-async function updateBadge(tabId, state, targetLang = "fr") {
-  if (!api.action?.setBadgeText) return;
-  const badgeText = targetLang === "nl" ? "NL" : "FR";
+async function updateBadge(tabId, state, targetLanguage = "fr") {
+  if (!api.action?.setBadgeText || !tabId) return;
+
   try {
-    switch (state) {
-      case "active":
-        await api.action.setBadgeText({ tabId, text: badgeText });
-        await api.action.setBadgeBackgroundColor({ tabId, color: "#2563eb" }); // Blue
-        break;
-      case "whitelisted":
-      case "bypassed":
-        await api.action.setBadgeText({ tabId, text: "OFF" });
-        await api.action.setBadgeBackgroundColor({ tabId, color: "#d97706" }); // Amber
-        break;
-      case "disabled":
-      case "idle":
-      default:
-        await api.action.setBadgeText({ tabId, text: "" });
-        break;
+    if (state === "disabled") {
+      await api.action.setBadgeText({ tabId, text: "OFF" });
+      await api.action.setBadgeBackgroundColor({ tabId, color: "#64748b" });
+    } else if (state === "active_be") {
+      await api.action.setBadgeText({ tabId, text: targetLanguage.toUpperCase() });
+      await api.action.setBadgeBackgroundColor({ tabId, color: "#2563eb" }); // Blue
+    } else if (state === "active_custom") {
+      await api.action.setBadgeText({ tabId, text: targetLanguage.toUpperCase() });
+      await api.action.setBadgeBackgroundColor({ tabId, color: "#059669" }); // Emerald
+    } else {
+      await api.action.setBadgeText({ tabId, text: "" });
     }
   } catch {}
 }
 
 async function refreshTabBadge(tabId, url) {
-  if (!url || typeof url !== "string") {
-    await updateBadge(tabId, "idle");
-    return;
-  }
-
-  let urlObj;
+  if (!tabId || !url) return;
   try {
-    urlObj = new URL(url);
-  } catch {
-    await updateBadge(tabId, "idle");
-    return;
-  }
+    const urlObj = new URL(url);
+    if (urlObj.protocol !== "http:" && urlObj.protocol !== "https:") {
+      await updateBadge(tabId, "idle");
+      return;
+    }
 
-  const hostname = urlObj.hostname.toLowerCase();
-  const hostParts = hostname.split(".");
-  const tld = hostParts[hostParts.length - 1];
-  const isBe = tld === "be" || hostname === "be";
-  const isCommercialCom = tld === "com";
+    const hostname = urlObj.hostname.toLowerCase();
+    const { enabled, targetLanguage, customDomains, excludedBeDomains } = await getSyncData();
 
-  const { enabled, targetLanguage, whitelist } = await getSyncData();
-  const isTargetSub = hostParts.length > 2 && hostParts[0] === targetLanguage;
+    if (!enabled) {
+      await updateBadge(tabId, "disabled", targetLanguage);
+      return;
+    }
 
-  if (!enabled) {
-    await updateBadge(tabId, "disabled", targetLanguage);
-    return;
-  }
-
-  if (isDomainExcluded(hostname, whitelist)) {
-    await updateBadge(tabId, "whitelisted", targetLanguage);
-    return;
-  }
-
-  const { sessionBypassed } = await getSessionData();
-  if (isDomainExcluded(hostname, sessionBypassed)) {
-    await updateBadge(tabId, "bypassed", targetLanguage);
-    return;
-  }
-
-  if (isBe || (isCommercialCom && isTargetSub) || isTargetSub || isSourceLangUrl(url, targetLanguage)) {
-    await updateBadge(tabId, "active", targetLanguage);
-  } else {
-    await updateBadge(tabId, "idle", targetLanguage);
-  }
-}
-
-// =============================================================================
-// Navigation & Loop Guard Handler
-// =============================================================================
-
-async function handleUrlNavigation(tabId, url) {
-  if (!url || typeof url !== "string") return;
-
-  let urlObj;
-  try {
-    urlObj = new URL(url);
-  } catch {
-    return;
-  }
-
-  if (urlObj.protocol !== "http:" && urlObj.protocol !== "https:") {
-    return;
-  }
-
-  const hostname = urlObj.hostname.toLowerCase();
-  const hostParts = hostname.split(".");
-  const tld = hostParts[hostParts.length - 1];
-  const isBeDomain = tld === "be" || hostname === "be";
-
-  // Check global enable state & target language preference
-  const { enabled, targetLanguage, whitelist } = await getSyncData();
-  if (!enabled) {
-    await updateBadge(tabId, "disabled", targetLanguage);
-    return;
-  }
-
-  // Check persistent whitelist
-  if (isDomainExcluded(hostname, whitelist)) {
-    await updateBadge(tabId, "whitelisted", targetLanguage);
-    return;
-  }
-
-  // Check temporary session bypass
-  const session = await getSessionData();
-  const sessionBypassed = session.sessionBypassed || [];
-  if (isDomainExcluded(hostname, sessionBypassed)) {
-    await updateBadge(tabId, "bypassed", targetLanguage);
-    return;
-  }
-
-  const pending = await getPendingRedirect(tabId);
-  const now = Date.now();
-
-  // Loop Guard check:
-  // If this tab was redirected within 5 seconds
-  if (pending && (now - pending.timestamp < REDIRECT_LOOP_WINDOW_MS)) {
-    const isSameDomain = hostname === pending.domain || hostname.endsWith("." + pending.domain);
-    if (isSameDomain) {
-      // If server bounced back to source language or the original URL:
-      if (isSourceLangUrl(url, targetLanguage) || url === pending.fromUrl) {
-        console.warn(`[BE Locale Switcher] Redirect loop detected for ${hostname}! Bypassing for this session.`);
-        await clearPendingRedirect(tabId);
-        await markDomainSessionBypassed(pending.domain);
-        await updateBadge(tabId, "bypassed", targetLanguage);
-        return;
+    if (isBeDomain(hostname)) {
+      if (isDomainMatching(hostname, excludedBeDomains)) {
+        await updateBadge(tabId, "idle", targetLanguage);
+      } else {
+        await updateBadge(tabId, "active_be", targetLanguage);
       }
-    }
-  }
-
-  // Calculate potential rewritten URL for targetLanguage
-  const rewrittenUrl = rewriteUrl(url, targetLanguage);
-  if (rewrittenUrl && rewrittenUrl !== url) {
-    // Record pending redirect before executing
-    await setPendingRedirect(tabId, {
-      domain: hostname,
-      fromUrl: url,
-      toUrl: rewrittenUrl,
-      timestamp: now
-    });
-
-    try {
-      await api.tabs.update(tabId, { url: rewrittenUrl });
-      await updateBadge(tabId, "active", targetLanguage);
-    } catch (err) {
-      console.error("[BE Locale Switcher] tabs.update error:", err);
-    }
-  } else {
-    // URL does not need rewrite
-    const isCommercialCom = tld === "com";
-    const isTargetSub = hostParts.length > 2 && hostParts[0] === targetLanguage;
-
-    if (isBeDomain || (isCommercialCom && isTargetSub) || isTargetSub) {
-      await updateBadge(tabId, "active", targetLanguage);
+    } else if (isDomainMatching(hostname, customDomains)) {
+      await updateBadge(tabId, "active_custom", targetLanguage);
     } else {
       await updateBadge(tabId, "idle", targetLanguage);
     }
+  } catch {
+    await updateBadge(tabId, "idle");
   }
 }
 
 /**
- * Handles 404 reported after a redirect
- */
-async function handle404Report(tabId, reportedUrl) {
-  const pending = await getPendingRedirect(tabId);
-  if (!pending) return;
-  // Only revert when the 404 is on the page we redirected to.
-  if (reportedUrl && reportedUrl !== pending.toUrl) return;
-
-  const { targetLanguage } = await getSyncData();
-  const now = Date.now();
-  if (now - pending.timestamp < REDIRECT_LOOP_WINDOW_MS) {
-    console.warn(`[BE Locale Switcher] 404 detected after redirecting to ${reportedUrl}. Reverting to fallback version and bypassing.`);
-    const domain = pending.domain;
-    const fallbackUrl = pending.fromUrl;
-
-    await clearPendingRedirect(tabId);
-    await markDomainSessionBypassed(domain);
-
-    try {
-      await api.tabs.update(tabId, { url: fallbackUrl });
-      await updateBadge(tabId, "bypassed", targetLanguage);
-    } catch (err) {
-      console.error("[BE Locale Switcher] 404 fallback tabs.update error:", err);
-    }
-  }
-}
-
-/**
- * Returns comprehensive status for a given URL (used by popup)
+ * Returns comprehensive status for a given URL (used by the popup).
  */
 async function getStatusForUrl(url) {
-  const { enabled, targetLanguage, whitelist } = await getSyncData();
-  const { sessionBypassed } = await getSessionData();
+  const syncData = await getSyncData();
+  const { enabled, targetLanguage, customDomains, excludedBeDomains } = syncData;
 
   let hostname = "";
-  let primaryDomain = "";
   let isBe = false;
-  let isCommercialCom = false;
-  let isTargetSub = false;
+  let isCustom = false;
+  let isExcludedBe = false;
 
-  if (url && typeof url === "string") {
+  if (url) {
     try {
-      const u = new URL(url);
-      hostname = u.hostname.toLowerCase();
-      primaryDomain = getPrimaryDomain(hostname);
-      const hostParts = hostname.split(".");
-      const tld = hostParts[hostParts.length - 1];
-      isBe = tld === "be" || hostname === "be";
-      isCommercialCom = tld === "com";
-      isTargetSub = hostParts.length > 2 && hostParts[0] === targetLanguage;
+      const urlObj = new URL(url);
+      hostname = urlObj.hostname.toLowerCase();
+      isBe = isBeDomain(hostname);
+      isCustom = isDomainMatching(hostname, customDomains);
+      isExcludedBe = isBe && isDomainMatching(hostname, excludedBeDomains);
     } catch {}
   }
 
-  const isWhitelisted = isDomainExcluded(hostname, whitelist);
-  const isSessionBypassed = isDomainExcluded(hostname, sessionBypassed);
-
-  let state = "idle";
-  let statusText = "Non-Belgian domain (Inactive)";
-
-  const langLabel = targetLanguage === "nl" ? "Dutch (nl-BE)" : "French (fr-FR)";
-
-  if (!enabled) {
-    state = "disabled";
-    statusText = "Extension Disabled";
-  } else if (isWhitelisted) {
-    state = "whitelisted";
-    statusText = "Ignored by user (Whitelisted)";
-  } else if (isSessionBypassed) {
-    state = "bypassed";
-    statusText = "Temporarily Bypassed (Loop / 404)";
-  } else if (isBe) {
-    state = "active";
-    statusText = `Active — Forcing ${langLabel}`;
-  } else if (isCommercialCom && isTargetSub) {
-    state = "active";
-    statusText = `Active — Commercial site (${targetLanguage}.*)`;
-  } else if (isTargetSub) {
-    state = "active";
-    statusText = `Active — Target subdomain (${targetLanguage}.*)`;
-  }
+  const isInjecting = enabled && ((isBe && !isExcludedBe) || isCustom);
 
   return {
     enabled,
     targetLanguage,
+    customDomains,
+    excludedBeDomains,
     hostname,
-    primaryDomain,
     isBe,
-    isWhitelisted,
-    isSessionBypassed,
-    state,
-    statusText,
-    whitelist,
-    sessionBypassed
+    isCustom,
+    isExcludedBe,
+    isInjecting
   };
 }
 
 // =============================================================================
-// Extension Event Listeners
+// Event Listeners
 // =============================================================================
 
-// Listen to URL updates in tabs
+// Listen to URL updates in tabs to refresh toolbar badge
 if (api.tabs?.onUpdated) {
-  api.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.url) {
-      handleUrlNavigation(tabId, changeInfo.url);
+  api.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    const tabUrl = changeInfo.url || tab?.url;
+    if (tabUrl) {
+      refreshTabBadge(tabId, tabUrl);
     }
   });
 }
@@ -786,47 +299,83 @@ if (api.tabs?.onActivated) {
   });
 }
 
-// Clean up pending redirects when tab is closed
-if (api.tabs?.onRemoved) {
-  api.tabs.onRemoved.addListener(async (tabId) => {
-    await clearPendingRedirect(tabId);
-  });
-}
-
-// Runtime messages (from popup or content script)
+// Message listener for popup interactions
 if (api.runtime?.onMessage) {
   api.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (!message || !message.type) return;
-
-    if (message.type === "404_DETECTED" && sender?.tab?.id) {
-      handle404Report(sender.tab.id, message.url);
-      sendResponse?.({ status: "handled" });
-      return true;
-    }
-
     if (message.type === "GET_STATUS") {
       getStatusForUrl(message.url).then(sendResponse);
       return true;
     }
 
+    if (message.type === "SET_ENABLED") {
+      setSyncData({ enabled: !!message.enabled }).then(async () => {
+        await syncDnrRules();
+        sendResponse?.({ status: "ok" });
+      });
+      return true;
+    }
+
     if (message.type === "SET_TARGET_LANGUAGE") {
       const targetLang = message.language === "nl" ? "nl" : "fr";
-      api.storage.sync.set({ targetLanguage: targetLang }).then(async () => {
+      setSyncData({ targetLanguage: targetLang }).then(async () => {
         await syncDnrRules();
         sendResponse?.({ status: "ok", targetLanguage: targetLang });
       });
       return true;
     }
 
-    if (message.type === "RESET_SESSION_BYPASS") {
-      resetSessionBypass(message.domain).then(() => {
+    if (message.type === "TOGGLE_CURRENT_SITE") {
+      getSyncData().then(async (data) => {
+        const domain = normalizeDomain(message.domain);
+        if (!domain) return;
+
+        if (isBeDomain(domain)) {
+          // Toggle .be exclusion
+          let list = [...data.excludedBeDomains];
+          if (list.includes(domain)) {
+            list = list.filter((d) => d !== domain);
+          } else {
+            list.push(domain);
+          }
+          await setSyncData({ excludedBeDomains: list });
+        } else {
+          // Toggle custom domain inclusion
+          let list = [...data.customDomains];
+          if (list.includes(domain)) {
+            list = list.filter((d) => d !== domain);
+          } else {
+            list.push(domain);
+          }
+          await setSyncData({ customDomains: list });
+        }
+
+        await syncDnrRules();
         sendResponse?.({ status: "ok" });
       });
       return true;
     }
 
-    if (message.type === "SYNC_RULES") {
-      syncDnrRules().then(() => {
+    if (message.type === "ADD_CUSTOM_DOMAIN") {
+      getSyncData().then(async (data) => {
+        const domain = normalizeDomain(message.domain);
+        if (!domain) {
+          sendResponse?.({ status: "error", message: "Invalid domain" });
+          return;
+        }
+        const list = Array.from(new Set([...data.customDomains, domain]));
+        await setSyncData({ customDomains: list });
+        await syncDnrRules();
+        sendResponse?.({ status: "ok" });
+      });
+      return true;
+    }
+
+    if (message.type === "REMOVE_CUSTOM_DOMAIN") {
+      getSyncData().then(async (data) => {
+        const domain = normalizeDomain(message.domain);
+        const list = data.customDomains.filter((d) => d !== domain);
+        await setSyncData({ customDomains: list });
+        await syncDnrRules();
         sendResponse?.({ status: "ok" });
       });
       return true;
@@ -837,45 +386,41 @@ if (api.runtime?.onMessage) {
 // Storage change listener to keep DNR rules in sync
 if (api.storage?.onChanged) {
   api.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === "sync" || areaName === "session") {
+    if (areaName === "sync") {
       syncDnrRules();
     }
   });
 }
 
-// On install or startup
+// Lifecycle Handlers
 if (api.runtime?.onInstalled) {
   api.runtime.onInstalled.addListener(async () => {
-    const { enabled, targetLanguage } = await getSyncData();
-    if (enabled === undefined) {
-      await api.storage.sync.set({ enabled: true, targetLanguage: "fr", whitelist: [] });
-    }
-    await setSessionData({ sessionBypassed: [] });
     await syncDnrRules();
   });
 }
 
 if (api.runtime?.onStartup) {
   api.runtime.onStartup.addListener(async () => {
-    await setSessionData({ sessionBypassed: [] });
     await syncDnrRules();
   });
 }
 
-// Export for Node.js unit tests
+// =============================================================================
+// Exports for Node test environments
+// =============================================================================
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    getPrimaryDomain,
-    isDomainExcluded,
-    applyCase,
-    getLanguagePair,
-    rewriteLocaleString,
-    isSourceLangUrl,
-    isDutchUrl,
-    rewriteUrl,
-    RULE_ID_ACCEPT_LANGUAGE,
+    isBeDomain,
+    normalizeDomain,
+    isDomainMatching,
+    buildDnrRules,
+    syncDnrRules,
+    getSyncData,
+    setSyncData,
+    getStatusForUrl,
     FRENCH_ACCEPT_LANGUAGE,
     DUTCH_ACCEPT_LANGUAGE,
-    REDIRECT_LOOP_WINDOW_MS
+    RULE_ID_BE_DOMAINS,
+    RULE_ID_CUSTOM_DOMAINS
   };
 }

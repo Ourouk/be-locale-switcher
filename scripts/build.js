@@ -84,7 +84,6 @@ function packageExtensions() {
   const filesToInclude = [
     'manifest.json',
     'background.js',
-    'content.js',
     'popup',
     'icons'
   ];

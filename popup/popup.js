@@ -1,7 +1,7 @@
 /**
  * BE Locale Switcher - Popup Controller
- * Lightweight, privacy-friendly Manifest V3 popup script.
- * Supports bi-directional locale switching (French first vs Dutch first).
+ * Minimal, lightweight Manifest V3 popup script.
+ * Manages locale selection, active site toggle, and custom domain injection whitelist.
  */
 
 const api = globalThis.browser ?? globalThis.chrome;
@@ -12,20 +12,29 @@ const brandSubtitle = document.getElementById("brand-subtitle");
 const langBtnFr = document.getElementById("lang-btn-fr");
 const langBtnNl = document.getElementById("lang-btn-nl");
 const footerBadge = document.getElementById("footer-badge");
+
 const siteDomainEl = document.getElementById("site-domain");
 const statusDot = document.getElementById("status-dot");
 const statusTitle = document.getElementById("status-title");
 const statusDesc = document.getElementById("status-desc");
-const whitelistToggleBtn = document.getElementById("whitelist-toggle-btn");
-const whitelistBtnText = document.getElementById("whitelist-btn-text");
-const whitelistBtnIcon = document.getElementById("whitelist-btn-icon");
-const resetBypassBtn = document.getElementById("reset-bypass-btn");
-const permissionBanner = document.getElementById("permission-banner");
-const grantPermissionBtn = document.getElementById("grant-permission-btn");
-const whitelistAccordionBtn = document.getElementById("whitelist-accordion-btn");
-const whitelistAccordionContent = document.getElementById("whitelist-accordion-content");
-const whitelistCountLabel = document.getElementById("whitelist-count-label");
-const whitelistItemsList = document.getElementById("whitelist-items");
+const siteActionBtn = document.getElementById("site-action-btn");
+const siteActionIcon = document.getElementById("site-action-icon");
+const siteActionText = document.getElementById("site-action-text");
+
+// Custom Injected Domains Accordion
+const customAccordionBtn = document.getElementById("custom-accordion-btn");
+const customAccordionContent = document.getElementById("custom-accordion-content");
+const customCountLabel = document.getElementById("custom-count-label");
+const customDomainInput = document.getElementById("custom-domain-input");
+const addDomainBtn = document.getElementById("add-domain-btn");
+const customDomainItems = document.getElementById("custom-domain-items");
+
+// Excluded .BE Domains Section
+const excludedSection = document.getElementById("excluded-section");
+const excludedAccordionBtn = document.getElementById("excluded-accordion-btn");
+const excludedAccordionContent = document.getElementById("excluded-accordion-content");
+const excludedCountLabel = document.getElementById("excluded-count-label");
+const excludedDomainItems = document.getElementById("excluded-domain-items");
 
 // Local State
 let currentTab = null;
@@ -35,29 +44,9 @@ let currentStatus = null;
  * Initializes the popup on load.
  */
 async function init() {
-  await checkFirefoxPermissions();
   await loadCurrentTab();
   await refreshUI();
   setupEventListeners();
-}
-
-/**
- * Checks if Firefox requires explicit host permission grant for .be sites.
- */
-async function checkFirefoxPermissions() {
-  if (!api.permissions?.contains) return;
-  try {
-    const hasPermission = await api.permissions.contains({
-      origins: ["*://*.be/*"]
-    });
-    if (!hasPermission) {
-      permissionBanner.classList.remove("hidden");
-    } else {
-      permissionBanner.classList.add("hidden");
-    }
-  } catch (err) {
-    console.debug("Permissions check failed or unsupported:", err);
-  }
 }
 
 /**
@@ -87,7 +76,8 @@ async function refreshUI() {
     if (res) {
       currentStatus = res;
       renderStatus(res);
-      renderWhitelist(res.whitelist || []);
+      renderCustomDomains(res.customDomains || []);
+      renderExcludedDomains(res.excludedBeDomains || []);
     }
   } catch (err) {
     console.error("Error communicating with background:", err);
@@ -95,182 +85,216 @@ async function refreshUI() {
 }
 
 /**
- * Renders the active site status and language direction.
+ * Renders the active site card and language direction.
  */
 function renderStatus(status) {
-  // Global Toggle
-  globalToggle.checked = status.enabled;
+  const targetLang = status.targetLanguage || "fr";
 
-  // Language Direction Selector
-  const targetLang = status.targetLanguage === "nl" ? "nl" : "fr";
+  // Global toggle state
+  globalToggle.checked = !!status.enabled;
+
+  // Language buttons
   if (targetLang === "nl") {
     langBtnNl.classList.add("active");
     langBtnFr.classList.remove("active");
-    brandSubtitle.textContent = "Belgian Dutch Enforcer (FR → NL)";
+    brandSubtitle.textContent = "Dutch (nl-BE) Locale Enforcer";
     footerBadge.textContent = "nl-BE • .BE";
   } else {
     langBtnFr.classList.add("active");
     langBtnNl.classList.remove("active");
-    brandSubtitle.textContent = "Belgian French Enforcer (NL → FR)";
+    brandSubtitle.textContent = "French (fr-FR) Locale Enforcer";
     footerBadge.textContent = "fr-FR • .BE";
   }
 
-  // Domain text
-  if (status.hostname) {
-    siteDomainEl.textContent = status.hostname;
-    whitelistToggleBtn.disabled = false;
-  } else {
-    siteDomainEl.textContent = "No active webpage";
-    whitelistToggleBtn.disabled = true;
-  }
+  // Active site hostname
+  const hostname = status.hostname || (currentTab?.url ? "Unknown Domain" : "No Active Page");
+  siteDomainEl.textContent = hostname;
+  siteDomainEl.title = hostname;
 
-  // Clear previous dot classes
+  // Reset indicator dots
   statusDot.className = "status-dot";
 
-  // State-specific presentation
   if (!status.enabled) {
     statusDot.classList.add("dot-idle");
     statusTitle.textContent = "Extension Disabled";
-    statusDesc.textContent = "Websites will use default browser locale";
-    resetBypassBtn.classList.add("hidden");
-    updateWhitelistButton(status.isWhitelisted, targetLang);
+    statusDesc.textContent = "Toggle on to inject Accept-Language headers";
+    siteActionBtn.disabled = true;
+    siteActionIcon.textContent = "⚡";
+    siteActionText.textContent = "Disabled";
     return;
   }
 
-  if (status.isWhitelisted) {
-    statusDot.classList.add("dot-warning");
-    statusTitle.textContent = "Whitelisted by User";
-    statusDesc.textContent = "Locale enforcement is paused on this site";
-    resetBypassBtn.classList.add("hidden");
-    updateWhitelistButton(true, targetLang);
+  if (!status.hostname) {
+    statusDot.classList.add("dot-idle");
+    statusTitle.textContent = "No Web Page";
+    statusDesc.textContent = "Navigate to a website to manage locale settings";
+    siteActionBtn.disabled = true;
+    siteActionIcon.textContent = "⚡";
+    siteActionText.textContent = "No Active Site";
     return;
   }
 
-  if (status.isSessionBypassed) {
-    statusDot.classList.add("dot-warning");
-    statusTitle.textContent = "Temporarily Bypassed";
-    statusDesc.textContent = "Redirect loop or 404 detected; bypassed for this session";
-    resetBypassBtn.classList.remove("hidden");
-    updateWhitelistButton(false, targetLang);
-    return;
-  }
-
-  resetBypassBtn.classList.add("hidden");
-
-  const langLabel = targetLang === "nl" ? "Dutch (nl-BE)" : "French (fr-FR)";
+  siteActionBtn.disabled = false;
+  const langName = targetLang === "nl" ? "Dutch (nl-BE)" : "French (fr-FR)";
 
   if (status.isBe) {
-    statusDot.classList.add("dot-active");
-    statusTitle.textContent = `Forcing ${langLabel}`;
-    statusDesc.textContent = `Headers set to ${targetLang}; Dutch/French URLs rewrite to ${targetLang}`;
-    updateWhitelistButton(false, targetLang);
+    if (status.isExcludedBe) {
+      statusDot.classList.add("dot-idle");
+      statusTitle.textContent = "Excluded .BE Site";
+      statusDesc.textContent = "Headers are untouched for this domain";
+      siteActionIcon.textContent = "✓";
+      siteActionText.textContent = "Re-enable on this .be site";
+    } else {
+      statusDot.classList.add("dot-active");
+      statusTitle.textContent = `Injecting ${langName}`;
+      statusDesc.textContent = `Default .be site: Accept-Language forced to ${targetLang}`;
+      siteActionIcon.textContent = "🚫";
+      siteActionText.textContent = "Exclude this .be site";
+    }
   } else {
-    statusDot.classList.add("dot-idle");
-    statusTitle.textContent = status.statusText || "Non-Belgian domain (Inactive)";
-    statusDesc.textContent = "Extension is active on .be and commercial .com domains";
-    updateWhitelistButton(false, targetLang);
+    if (status.isCustom) {
+      statusDot.classList.add("dot-active");
+      statusTitle.textContent = `Injecting ${langName}`;
+      statusDesc.textContent = `Injected via custom domain whitelist`;
+      siteActionIcon.textContent = "➖";
+      siteActionText.textContent = "Remove from custom domains";
+    } else {
+      statusDot.classList.add("dot-idle");
+      statusTitle.textContent = "Not Injected";
+      statusDesc.textContent = "Headers are untouched on this non-.be domain";
+      siteActionIcon.textContent = "➕";
+      siteActionText.textContent = "Inject locale on this domain";
+    }
   }
 }
 
 /**
- * Updates the Whitelist Toggle button label and icon.
+ * Renders the custom injected domains list.
  */
-function updateWhitelistButton(isWhitelisted, targetLang = "fr") {
-  const langName = targetLang === "nl" ? "Dutch" : "French";
-  if (isWhitelisted) {
-    whitelistBtnIcon.textContent = "✓";
-    whitelistBtnText.textContent = `Resume ${langName} for this site`;
-    whitelistToggleBtn.classList.remove("btn-secondary");
-    whitelistToggleBtn.classList.add("btn-accent");
-  } else {
-    whitelistBtnIcon.textContent = "🚫";
-    whitelistBtnText.textContent = "Ignore this site";
-    whitelistToggleBtn.classList.remove("btn-accent");
-    whitelistToggleBtn.classList.add("btn-secondary");
-  }
-}
+function renderCustomDomains(domains) {
+  customCountLabel.textContent = `Injected Custom Domains (${domains.length})`;
+  customDomainItems.innerHTML = "";
 
-/**
- * Renders the ignored sites list.
- */
-function renderWhitelist(whitelist) {
-  whitelistCountLabel.textContent = `Ignored Sites (${whitelist.length})`;
-  whitelistItemsList.innerHTML = "";
-
-  if (whitelist.length === 0) {
-    const emptyLi = document.createElement("li");
-    emptyLi.className = "whitelist-empty";
-    emptyLi.textContent = "No sites currently ignored.";
-    whitelistItemsList.appendChild(emptyLi);
+  if (domains.length === 0) {
+    const li = document.createElement("li");
+    li.className = "domain-empty";
+    li.textContent = "No custom domains added yet.";
+    customDomainItems.appendChild(li);
     return;
   }
 
-  whitelist.forEach((domain) => {
+  domains.forEach((domain) => {
     const li = document.createElement("li");
-    li.className = "whitelist-item";
+    li.className = "domain-item";
 
     const span = document.createElement("span");
-    span.className = "whitelist-item-domain";
+    span.className = "domain-item-text";
     span.textContent = domain;
 
-    const removeBtn = document.createElement("button");
-    removeBtn.className = "whitelist-remove-btn";
-    removeBtn.textContent = "✕";
-    removeBtn.title = `Remove ${domain} from whitelist`;
-    removeBtn.addEventListener("click", () => removeFromWhitelist(domain));
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn-remove";
+    delBtn.type = "button";
+    delBtn.title = `Remove ${domain}`;
+    delBtn.textContent = "✕";
+    delBtn.addEventListener("click", async () => {
+      await api.runtime.sendMessage({
+        type: "REMOVE_CUSTOM_DOMAIN",
+        domain
+      });
+      await refreshUI();
+      if (currentTab?.id && currentStatus?.hostname?.includes(domain)) {
+        api.tabs.reload(currentTab.id);
+      }
+    });
 
     li.appendChild(span);
-    li.appendChild(removeBtn);
-    whitelistItemsList.appendChild(li);
+    li.appendChild(delBtn);
+    customDomainItems.appendChild(li);
   });
 }
 
 /**
- * Removes a domain from the whitelist.
+ * Renders the excluded .be domains list (if any).
  */
-async function removeFromWhitelist(domain) {
-  try {
-    const data = await api.storage.sync.get(["whitelist"]);
-    const currentList = Array.isArray(data.whitelist) ? data.whitelist : [];
-    const updated = currentList.filter((d) => d.toLowerCase() !== domain.toLowerCase());
-
-    await api.storage.sync.set({ whitelist: updated });
-    await api.runtime.sendMessage({ type: "SYNC_RULES" });
-    await refreshUI();
-  } catch (err) {
-    console.error("Failed to remove from whitelist:", err);
+function renderExcludedDomains(domains) {
+  if (domains.length === 0) {
+    excludedSection.classList.add("hidden");
+    return;
   }
+
+  excludedSection.classList.remove("hidden");
+  excludedCountLabel.textContent = `Excluded .BE Sites (${domains.length})`;
+  excludedDomainItems.innerHTML = "";
+
+  domains.forEach((domain) => {
+    const li = document.createElement("li");
+    li.className = "domain-item";
+
+    const span = document.createElement("span");
+    span.className = "domain-item-text";
+    span.textContent = domain;
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn-remove";
+    delBtn.type = "button";
+    delBtn.title = `Re-enable ${domain}`;
+    delBtn.textContent = "✕";
+    delBtn.addEventListener("click", async () => {
+      await api.runtime.sendMessage({
+        type: "TOGGLE_CURRENT_SITE",
+        domain
+      });
+      await refreshUI();
+      if (currentTab?.id && currentStatus?.hostname?.includes(domain)) {
+        api.tabs.reload(currentTab.id);
+      }
+    });
+
+    li.appendChild(span);
+    li.appendChild(delBtn);
+    excludedDomainItems.appendChild(li);
+  });
 }
 
 /**
- * Toggles whitelist state for the current tab's domain.
+ * Toggles the active site state.
  */
-async function toggleCurrentSiteWhitelist() {
+async function toggleCurrentSite() {
   if (!currentStatus || !currentStatus.hostname) return;
 
-  const targetDomain = currentStatus.primaryDomain || currentStatus.hostname;
-
   try {
-    const data = await api.storage.sync.get(["whitelist"]);
-    const currentList = Array.isArray(data.whitelist) ? data.whitelist : [];
-    const isCurrentlyWhitelisted = currentStatus.isWhitelisted;
-
-    let updated;
-    if (isCurrentlyWhitelisted) {
-      updated = currentList.filter((d) => d.toLowerCase() !== targetDomain && d.toLowerCase() !== currentStatus.hostname);
-    } else {
-      updated = Array.from(new Set([...currentList, targetDomain]));
-    }
-
-    await api.storage.sync.set({ whitelist: updated });
-    await api.runtime.sendMessage({ type: "SYNC_RULES" });
+    await api.runtime.sendMessage({
+      type: "TOGGLE_CURRENT_SITE",
+      domain: currentStatus.hostname
+    });
     await refreshUI();
-
     if (currentTab?.id) {
       api.tabs.reload(currentTab.id);
     }
   } catch (err) {
-    console.error("Failed to toggle whitelist:", err);
+    console.error("Failed to toggle site:", err);
+  }
+}
+
+/**
+ * Adds a new custom domain manually.
+ */
+async function handleAddCustomDomain() {
+  const val = customDomainInput.value.trim();
+  if (!val) return;
+
+  try {
+    await api.runtime.sendMessage({
+      type: "ADD_CUSTOM_DOMAIN",
+      domain: val
+    });
+    customDomainInput.value = "";
+    await refreshUI();
+    if (currentTab?.id && currentStatus?.hostname?.includes(val.toLowerCase())) {
+      api.tabs.reload(currentTab.id);
+    }
+  } catch (err) {
+    console.error("Failed to add domain:", err);
   }
 }
 
@@ -298,26 +322,9 @@ async function setTargetLanguage(language) {
 function setupEventListeners() {
   // Global Toggle
   globalToggle.addEventListener("change", async (e) => {
-    const enabled = e.target.checked;
-    await api.storage.sync.set({ enabled });
-    await api.runtime.sendMessage({ type: "SYNC_RULES" });
-    await refreshUI();
-  });
-
-  // Language Direction Buttons
-  langBtnFr.addEventListener("click", () => setTargetLanguage("fr"));
-  langBtnNl.addEventListener("click", () => setTargetLanguage("nl"));
-
-  // Whitelist Toggle
-  whitelistToggleBtn.addEventListener("click", toggleCurrentSiteWhitelist);
-
-  // Reset Session Bypass
-  resetBypassBtn.addEventListener("click", async () => {
-    if (!currentStatus || !currentStatus.hostname) return;
-    const targetDomain = currentStatus.primaryDomain || currentStatus.hostname;
     await api.runtime.sendMessage({
-      type: "RESET_SESSION_BYPASS",
-      domain: targetDomain
+      type: "SET_ENABLED",
+      enabled: e.target.checked
     });
     await refreshUI();
     if (currentTab?.id) {
@@ -325,27 +332,33 @@ function setupEventListeners() {
     }
   });
 
-  // Whitelist Accordion Toggle
-  whitelistAccordionBtn.addEventListener("click", () => {
-    whitelistAccordionBtn.classList.toggle("accordion-open");
-    whitelistAccordionContent.classList.toggle("hidden");
+  // Language Direction Buttons
+  langBtnFr.addEventListener("click", () => setTargetLanguage("fr"));
+  langBtnNl.addEventListener("click", () => setTargetLanguage("nl"));
+
+  // Current Site Action Button
+  siteActionBtn.addEventListener("click", toggleCurrentSite);
+
+  // Custom Domains Accordion
+  customAccordionBtn.addEventListener("click", () => {
+    customAccordionBtn.classList.toggle("accordion-open");
+    customAccordionContent.classList.toggle("hidden");
   });
 
-  // Firefox Permission Grant
-  grantPermissionBtn.addEventListener("click", async () => {
-    try {
-      const granted = await api.permissions.request({
-        origins: ["*://*.be/*"]
-      });
-      if (granted) {
-        permissionBanner.classList.add("hidden");
-        await refreshUI();
-      }
-    } catch (err) {
-      console.error("Permission request failed:", err);
+  // Add Domain Button & Enter Key
+  addDomainBtn.addEventListener("click", handleAddCustomDomain);
+  customDomainInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      handleAddCustomDomain();
     }
+  });
+
+  // Excluded .BE Domains Accordion
+  excludedAccordionBtn.addEventListener("click", () => {
+    excludedAccordionBtn.classList.toggle("accordion-open");
+    excludedAccordionContent.classList.toggle("hidden");
   });
 }
 
-// Start
+// Initialize on DOM load
 document.addEventListener("DOMContentLoaded", init);

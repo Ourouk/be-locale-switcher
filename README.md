@@ -1,57 +1,47 @@
 # BE Locale Switcher 🇧🇪 🇫🇷 🇳🇱
 
-> **Zero-bloat, privacy-friendly Manifest V3 cross-browser extension for Chromium (Chrome, Brave, Edge) and Firefox that automatically defaults Belgian websites to your preferred national language (French or Dutch) while keeping the rest of the web in your preferred browser language (e.g. English).**
+> **Zero-bloat, privacy-friendly Manifest V3 cross-browser extension for Chromium (Chrome, Brave, Edge) and Firefox that automatically defaults Belgian websites to your preferred national language (French or Dutch) via native HTTP `Accept-Language` headers, with a custom domain whitelist for any other website.**
 
 ---
 
 ## The Problem
 
-When your browser language is set to English, visiting Belgian (`.be`) and commercial international websites frequently defaults to the wrong national language because English versions are rarely provided, and servers fall back automatically:
+When your browser language is set to English, visiting Belgian (`.be`) and international websites frequently defaults to the wrong national language because English versions are rarely provided, and servers fall back automatically:
 - **For Francophones / Walloons:** English browsers constantly default to Dutch (`nl`).
 - **For Flemings:** English browsers or certain services default to French (`fr`).
 
-**BE Locale Switcher** solves this seamlessly in both directions:
-1. **Dynamic Locale Forcing:** Sets the `Accept-Language` HTTP header on `.be` requests to your preferred language (French or Dutch) using native, zero-CPU `declarativeNetRequest`.
-2. **Smart URL Rewriting:** Bi-directionally rewrites language patterns (`nl` ⟷ `fr`) across subdomains, path segments, and query parameters.
-3. **Infinite Redirect Loop & 404 Guard:** Automatically detects single-language sites (e.g., Dutch-only or French-only regional portals) and temporarily bypasses them if a rewrite fails.
-4. **Domestic Domain Protection:** Never rewrites domestic sites of the source language (e.g., `.nl` domains are never rewritten in French mode, `.fr` domains are never rewritten in Dutch mode).
-5. **No Collateral Damage:** Lets the rest of the internet stay in English (or whatever your browser default is).
+**BE Locale Switcher** solves this at the root network layer:
+1. **Zero-CPU Header Locale Injection:** Intercepts requests and injects your preferred `Accept-Language` HTTP header (`fr-FR` or `nl-BE`) using native `declarativeNetRequest`.
+2. **Default `.be` Coverage:** Automatically active on all Belgian `.be` domains (`*://*.be/*`).
+3. **Custom Domain Whitelist:** Easily inject headers on any other domain (e.g. `aliexpress.com`, `ikea.com`, `amazon.com`) with a single click or manual entry.
+4. **Zero Bloat & Zero Side Effects:** No URL tampering, no redirect loops, no content scripts injected into pages.
 
 ---
 
 ## Key Features
 
-- **Header Locale Forcing (`Accept-Language`):**
-  Uses `declarativeNetRequest` (`modifyHeaders`) to intercept requests to `*://*.be/*` (`main_frame`, `sub_frame`, `xmlhttprequest`), setting:
-  ```http
-  Accept-Language: fr-FR,fr;q=0.9,fr-BE;q=0.8,en;q=0.7
-  ```
-  Non-`.be` domains are untouched.
+- **Native Header Modification (`Accept-Language`):**
+  Uses browser `declarativeNetRequest` (`modifyHeaders`) to set:
+  - **French First:** `fr-FR,fr;q=0.9,fr-BE;q=0.8,en;q=0.7`
+  - **Dutch First:** `nl-BE,nl;q=0.9,nl-NL;q=0.8,en;q=0.7`
 
-- **Smart URL Rewriting (`nl` → `fr`):**
-  - **Subdomains:** `nl.example.be` → `fr.example.be`, `nl-be.example.be` → `fr-be.example.be`
-  - **Path segments:** `/nl/`, `/nl`, `/nl-be/`, `/nl_BE/`, `/nl_be/` → `/fr/`, `/fr`, `/fr-be/`, etc.
-  - **Query parameters:** `lang=nl` → `lang=fr`, `locale=nl_BE` → `locale=fr_BE`, `hl=nl` → `hl=fr`
-  - **Non-`.be` international sites:** Only rewrites Belgian-specific Dutch codes (e.g., `example.com/nl-be/` → `example.com/fr-be/`), never touching generic Dutch sites (`example.com/nl/`).
-  - **Strict boundary matching:** Word boundaries prevent altering words like `/online`, `/only`, or `/download`.
+- **Automatic Belgian Domain Targeting (`.be`):**
+  All `.be` domains receive your preferred language headers out of the box.
 
-- **Infinite Redirect Loop & 404 Protection:**
-  Some Belgian sites are Flemish-only and redirect `/fr` back to `/nl` or return an HTTP 404:
-  - If a tab redirects from `nl` → `fr` and bounces back to `nl` within **5 seconds**, the extension automatically detects the loop, halts redirects, and temporarily bypasses that domain in `storage.session`.
-  - If a 404 occurs on the French URL within 5 seconds, the extension reverts the tab back to the original Dutch URL and temporarily bypasses the domain for the session.
+- **Custom Domain Injection Whitelist:**
+  - One-click toggle in the popup to enable/disable header injection on the active site.
+  - Manage your list of custom domains directly from the popup (add or remove any domain).
 
 - **Minimalist Popup UI:**
-  - **Language Preference Selector:** One-click toggle between **French First** (`nl` → `fr`) and **Dutch First** (`fr` → `nl`).
+  - **Language Selector:** Instant toggle between **French First** and **Dutch First**.
   - **Global Switch:** Instantly enable or disable the extension.
-  - **Site Whitelist Button:** One-click "Ignore this site" toggle, saved in `storage.sync` and dynamically updating `declarativeNetRequest` exclusion rules.
-  - **Live Status Indicator:** Real-time feedback (`Forcing French`, `Forcing Dutch`, `Whitelisted`, `Temporarily Bypassed`, `Inactive`).
-  - **Ignored Sites List:** View and manage whitelisted domains.
-  - **Firefox Permission Helper:** Built-in prompt to grant host permissions in Firefox MV3.
+  - **Active Site Indicator:** Real-time feedback showing whether headers are currently being injected on the active tab.
+  - **Custom Domains List:** Collapsible list showing all manually injected domains with instant deletion.
 
 - **Strict Privacy & Zero Dependencies:**
-  - Zero external libraries or npm build requirements.
-  - Permissions strictly scoped to Belgian sites (`*://*.be/*`). Dutch subdomains on .be and commercial .com domains are rewritten to French, while non-commercial Dutch pages elsewhere (e.g. `nl.wikipedia.org`) and domestic Netherlands domains (`.nl`) are left untouched. No broad tracking permissions.
-  - Memory-efficient background execution (idle event handlers).
+  - Zero external libraries or npm dependencies.
+  - Zero content scripts running on web pages.
+  - Completely event-driven background service worker.
 
 ---
 
@@ -62,22 +52,22 @@ be-locale-switcher/
 ├── manifest.chrome.json      # Manifest V3 for Chromium (service_worker)
 ├── manifest.firefox.json     # Manifest V3 for Firefox (background.scripts & Gecko settings)
 ├── manifest.json             # Active manifest (swappable via scripts/build.js)
-├── background.js             # Shared background script (DNR sync, loop guard, URL rewriting)
-├── content.js                # Lightweight 404 detector (document_idle)
+├── background.js             # Shared background script (declarativeNetRequest sync & badges)
 ├── popup/
 │   ├── popup.html            # Minimalist popup interface
 │   ├── popup.css             # Light/dark responsive styles
 │   └── popup.js              # Popup controller and status sync
 ├── icons/
-│   ├── icon.svg              # Scalable vector master icon
+│   ├── icon.svg              # Scalable vector master icon (transparent)
 │   ├── icon-16.png           # 16x16 PNG
 │   ├── icon-32.png           # 32x32 PNG
 │   ├── icon-48.png           # 48x48 PNG
-│   └── icon-128.png          # 128x128 PNG
+│   ├── icon-128.png          # 128x128 PNG
+│   └── icon-master.png       # 512x512 master PNG
 ├── scripts/
 │   ├── build.js              # Manifest switcher and .zip packaging utility
 ├── test/
-│   └── test-suite.js         # Automated test suite (unit & integration tests)
+│   └── test-suite.js         # Automated test suite (DNR rules, domains, manifests)
 ├── dist/                     # Packaged zip releases
 └── package.json              # NPM metadata and scripts
 ```
@@ -118,7 +108,6 @@ be-locale-switcher/
    ```
 3. Click **Load Temporary Add-on...**
 4. Browse to the `be-locale-switcher` folder and select `manifest.json`.
-5. *(Optional/Recommended)* When opening the popup on a `.be` site for the first time, click **Grant** if Firefox displays the host permission prompt to allow `declarativeNetRequest` header modifications.
 
 ---
 
@@ -144,22 +133,13 @@ node scripts/build.js package
 
 ## Running Automated Tests
 
-Run the comprehensive unit and integration test suite:
+Run the unit and integration test suite:
 
 ```bash
 npm test
 # or:
 node test/test-suite.js
 ```
-
-The test suite covers:
-- Subdomain transformations and boundary safety (`online.example.be`, `only.example.be`)
-- Path segment rewriting and preservation of uppercase (`/NL/` → `/FR/`)
-- Query parameter filtering (`lang`, `locale`, `hl`)
-- Non-`.be` domain isolation (only Belgian `nl-be` touched)
-- Domain extraction and parent domain matching
-- Loop Guard simulation (redirect detection within 5000ms)
-- Manifest syntax validation for both Chromium and Firefox
 
 ---
 
