@@ -74,6 +74,8 @@ async function runTests() {
     assert.strictEqual(normalizeDomain("http://example.be:8080/path"), "example.be");
     assert.strictEqual(normalizeDomain("  VRT.BE/nieuws  "), "vrt.be");
     assert.strictEqual(normalizeDomain("ikea.com/"), "ikea.com");
+    assert.strictEqual(normalizeDomain("www.google.com"), "google.com");
+    assert.strictEqual(normalizeDomain("https://www.google.be/search?q=test"), "google.be");
   });
 
   it("matches domains including subdomains", () => {
@@ -322,6 +324,56 @@ async function runTests() {
       fallbackRewriteUrl("https://vrt.be/nl/", "fr", [], ["vrt.be"]),
       null
     );
+  });
+
+  it("handles Google Search & homepage interface language (hl enforcement)", () => {
+    // google.be (default Belgian target)
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.be/"),
+      "https://www.google.be/?hl=fr"
+    );
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.be/?hl=nl"),
+      "https://www.google.be/?hl=fr"
+    );
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.be/search?q=table"),
+      "https://www.google.be/search?q=table&hl=fr"
+    );
+    // Already in target language -> null (no redundant redirect loop)
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.be/?hl=fr"),
+      null
+    );
+
+    // google.com (when in custom domains)
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.com/", "fr", ["google.com"]),
+      "https://www.google.com/?hl=fr"
+    );
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.com/search?q=laptop", "fr", ["google.com"]),
+      "https://www.google.com/search?q=laptop&hl=fr"
+    );
+    // google.com when NOT in custom domains -> not touched
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.com/", "fr", []),
+      null
+    );
+
+    // Dutch mode
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.be/", "nl"),
+      "https://www.google.be/?hl=nl"
+    );
+    assert.strictEqual(
+      fallbackRewriteUrl("https://www.google.be/?hl=fr", "nl"),
+      "https://www.google.be/?hl=nl"
+    );
+
+    // Domestic Google sites (.nl in French mode, .fr in Dutch mode) are never touched
+    assert.strictEqual(fallbackRewriteUrl("https://www.google.nl/", "fr"), null);
+    assert.strictEqual(fallbackRewriteUrl("https://www.google.fr/", "nl"), null);
   });
 
   // 6. Manifest Validation

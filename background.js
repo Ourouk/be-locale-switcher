@@ -66,6 +66,7 @@ function normalizeDomain(input) {
   let clean = input.trim().toLowerCase();
   clean = clean.replace(/^[a-z]+:\/\//i, "");
   clean = clean.split("/")[0].split("?")[0].split("#")[0].split(":")[0];
+  clean = clean.replace(/^www\./i, "");
   return clean;
 }
 
@@ -189,7 +190,7 @@ function fallbackRewriteUrl(inputUrl, targetLang = "fr", customDomains = [], exc
 
   // 3. Query parameters (e.g. ?lang=nl -> ?lang=fr on targeted sites)
   if (isTargetSite && urlObj.search.length > 1) {
-    const langKeyRegex = /^(.*_)?(lang|locale|language|lng|hl)$/i;
+    const langKeyRegex = /^(.*_)?(lang|locale|language|lng|hl|lr)$/i;
     let queryChanged = false;
     const out = urlObj.search.slice(1).split("&").map((pair) => {
       const eq = pair.indexOf("=");
@@ -209,12 +210,30 @@ function fallbackRewriteUrl(inputUrl, targetLang = "fr", customDomains = [], exc
         queryChanged = true;
         return `${key}=${encodeURIComponent(`${targetPart}${sep}${bePart}`)}`;
       }
+      if (new RegExp(`^lang_${source}$`, "i").test(decodedVal)) {
+        queryChanged = true;
+        return `${key}=${encodeURIComponent(`lang_${target}`)}`;
+      }
       return pair;
     });
 
     if (queryChanged) {
       urlObj.search = "?" + out.join("&");
       changed = true;
+    }
+  }
+
+  // 4. Google interface language enforcement (on targeted sites: google.be or custom google.com)
+  const isGoogle = hostname === "google.be" || hostname.endsWith(".google.be") ||
+                   hostname === "google.com" || hostname.endsWith(".google.com");
+  if (isTargetSite && isGoogle) {
+    const p = urlObj.pathname.toLowerCase();
+    if (p === "/" || p === "/search" || p === "/webhp") {
+      const currentHl = urlObj.searchParams.get("hl");
+      if (!currentHl || currentHl.toLowerCase() === source || currentHl.toLowerCase().startsWith(source + "-") || currentHl.toLowerCase().startsWith(source + "_")) {
+        urlObj.searchParams.set("hl", target);
+        changed = true;
+      }
     }
   }
 
