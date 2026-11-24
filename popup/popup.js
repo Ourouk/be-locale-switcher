@@ -317,8 +317,7 @@ function setupEventListeners() {
     const targetDomain = currentStatus.primaryDomain || currentStatus.hostname;
     await api.runtime.sendMessage({
       type: "RESET_SESSION_BYPASS",
-      domain: targetDomain,
-      tabId: currentTab?.id
+      domain: targetDomain
     });
     await refreshUI();
     if (currentTab?.id) {
