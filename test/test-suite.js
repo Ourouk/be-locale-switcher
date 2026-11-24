@@ -217,17 +217,31 @@ it("simulates loop guard redirect detection within 5000ms window", () => {
     domain: getPrimaryDomain("flemish-only.be"),
     fromUrl: initialUrl,
     toUrl: rewritten,
-    timestamp: startTime
+    timestamp: startTime,
+    targetReached: false
   };
 
-  // Step 2: Server bounces back to /nl/ within 1000ms
-  const bouncedUrl = "https://flemish-only.be/nl/nieuws";
+  // Step 2a: Immediate in-flight browser event for fromUrl (e.g. at 20ms) should be ignored
   const pending = store.pendingRedirects[tabId];
+  const inFlightElapsed = (startTime + 20) - pending.timestamp;
+  let inFlightIgnored = false;
+  if (!pending.targetReached && inFlightElapsed < 500) {
+    const isSameOrNorm = initialUrl === pending.fromUrl || initialUrl.replace(/\/$/, "") === pending.fromUrl.replace(/\/$/, "");
+    if (isSameOrNorm) {
+      inFlightIgnored = true;
+    }
+  }
+  assert.strictEqual(inFlightIgnored, true);
+  assert.strictEqual(store.sessionBypassed.length, 0); // Must NOT bypass during in-flight event!
+
+  // Step 2b: Server actually bounces back after 1000ms
+  const bouncedUrl = "https://flemish-only.be/nl/nieuws";
   const elapsed = (startTime + 1000) - pending.timestamp;
 
   let loopDetected = false;
   if (elapsed < REDIRECT_LOOP_WINDOW_MS) {
-    if (isDutchUrl(bouncedUrl) || bouncedUrl === pending.fromUrl) {
+    const isBounce = pending.targetReached || elapsed >= 500;
+    if (isBounce && (isDutchUrl(bouncedUrl) || bouncedUrl === pending.fromUrl)) {
       loopDetected = true;
       delete store.pendingRedirects[tabId];
       store.sessionBypassed.push(pending.domain);

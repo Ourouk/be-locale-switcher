@@ -618,13 +618,28 @@ async function handleUrlNavigation(tabId, url) {
   const pending = await getPendingRedirect(tabId);
   const now = Date.now();
 
-  // Loop Guard check:
+  // 1. Ignore in-flight browser events for the original source URL
+  // while the redirect is being dispatched (e.g. trailing slash normalization within 500ms).
+  if (pending && !pending.targetReached && (now - pending.timestamp < 500)) {
+    const isSameOrNormalizedFrom =
+      url === pending.fromUrl ||
+      url.replace(/\/$/, "") === pending.fromUrl.replace(/\/$/, "");
+    if (isSameOrNormalizedFrom) {
+      return;
+    }
+  }
+
+  // 2. Loop Guard check:
   // If this tab was redirected within 5 seconds
   if (pending && (now - pending.timestamp < REDIRECT_LOOP_WINDOW_MS)) {
     const isSameDomain = hostname === pending.domain || hostname.endsWith("." + pending.domain);
     if (isSameDomain) {
-      // If server bounced back to source language or the original URL:
-      if (isSourceLangUrl(url, targetLanguage) || url === pending.fromUrl) {
+      // Only detect loop if:
+      // (a) Target was already reached and server/client bounced back, OR
+      // (b) At least 500ms have elapsed (ruling out immediate in-flight browser noise)
+      //     and the URL is a source language URL or the original fromUrl.
+      const isBounce = pending.targetReached || (now - pending.timestamp >= 500);
+      if (isBounce && (isSourceLangUrl(url, targetLanguage) || url === pending.fromUrl)) {
         console.warn(`[BE Locale Switcher] Redirect loop detected for ${hostname}! Bypassing for this session.`);
         await clearPendingRedirect(tabId);
         await markDomainSessionBypassed(pending.domain);
@@ -634,7 +649,7 @@ async function handleUrlNavigation(tabId, url) {
     }
   }
 
-  // Calculate potential rewritten URL for targetLanguage
+  // 3. Calculate potential rewritten URL for targetLanguage
   const rewrittenUrl = rewriteUrl(url, targetLanguage);
   if (rewrittenUrl && rewrittenUrl !== url) {
     // Record pending redirect before executing
@@ -642,7 +657,8 @@ async function handleUrlNavigation(tabId, url) {
       domain: hostname,
       fromUrl: url,
       toUrl: rewrittenUrl,
-      timestamp: now
+      timestamp: now,
+      targetReached: false
     });
 
     try {
@@ -652,7 +668,15 @@ async function handleUrlNavigation(tabId, url) {
       console.error("[BE Locale Switcher] tabs.update error:", err);
     }
   } else {
-    // URL does not need rewrite
+    // URL does not need rewrite (target reached or already in target language)
+    if (pending && !pending.targetReached) {
+      const isTargetSub = hostParts.length > 2 && hostParts[0] === targetLanguage;
+      if (url === pending.toUrl || isTargetSub) {
+        pending.targetReached = true;
+        await setPendingRedirect(tabId, pending);
+      }
+    }
+
     const isCommercialCom = tld === "com";
     const isTargetSub = hostParts.length > 2 && hostParts[0] === targetLanguage;
 
@@ -819,6 +843,9 @@ if (api.runtime?.onMessage) {
     }
 
     if (message.type === "RESET_SESSION_BYPASS") {
+      if (message.tabId) {
+        clearPendingRedirect(message.tabId);
+      }
       resetSessionBypass(message.domain).then(() => {
         sendResponse?.({ status: "ok" });
       });
